@@ -1,0 +1,6 @@
+{
+    "require": {
+        "google/protobuf": "^5.35",
+        "phpseclib/phpseclib": "^3.0"
+    }
+}
