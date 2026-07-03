@@ -193,8 +193,12 @@ if ($action === "auth") {
                 'method' => 'POST',
                 'header' => "Content-Type: application/x-protobuf\r\n",
                 'content' => $payload,
-                'timeout' => 5,
+                'timeout' => 10,
                 'ignore_errors' => true,
+            ],
+            'ssl' => [
+                'verify_peer' => false,
+                'verify_peer_name' => false,
             ]
         ]);
         
