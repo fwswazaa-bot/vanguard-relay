@@ -169,6 +169,9 @@ if ($action === "auth") {
 
 } elseif ($action === "forward") {
     if (!$response_b64) {
+        $response_b64 = isset($input["gametoken"]) && is_string($input["gametoken"]) ? $input["gametoken"] : null;
+    }
+    if (!$response_b64) {
         fail(400, "missing payload");
     }
     
