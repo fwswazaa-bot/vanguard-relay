@@ -9,4 +9,4 @@ COPY . .
 
 EXPOSE 8080
 
-CMD ["php", "-S", "0.0.0.0:8080", "gateway.php"]
+CMD php -S 0.0.0.0:${PORT:-8080} gateway.php
