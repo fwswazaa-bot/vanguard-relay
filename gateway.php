@@ -167,6 +167,53 @@ if ($action === "auth") {
 
     die(json_encode(["success" => true, "data" => base64_encode($finalPayload)]));
 
+} elseif ($action === "forward") {
+    if (!$response_b64) {
+        fail(400, "missing payload");
+    }
+    
+    $payload = base64_decode($response_b64, true);
+    if ($payload === false || strlen($payload) === 0) {
+        fail(400, "invalid payload encoding");
+    }
+    
+    $VANGUARD_SERVERS = [
+        "na" => "na.vg.ac.pvp.net",
+        "eu" => "eu.vg.ac.pvp.net",
+        "ap" => "ap.vg.ac.pvp.net",
+        "kr" => "kr.vg.ac.pvp.net",
+    ];
+    
+    $responseData = null;
+    $lastError = null;
+    
+    foreach ($VANGUARD_SERVERS as $region => $host) {
+        $context = stream_context_create([
+            'http' => [
+                'method' => 'POST',
+                'header' => "Content-Type: application/x-protobuf\r\n",
+                'content' => $payload,
+                'timeout' => 5,
+                'ignore_errors' => true,
+            ]
+        ]);
+        
+        $url = "https://{$host}:8443/vanguard/v1/gateway";
+        $resp = @file_get_contents($url, false, $context);
+        
+        if ($resp !== false && strlen($resp) > 0) {
+            $responseData = $resp;
+            break;
+        }
+        $lastError = error_get_last();
+    }
+    
+    if ($responseData === null) {
+        fail(502, "Vanguard forward failed: " . ($lastError['message'] ?? 'all servers failed'));
+    }
+    
+    die(json_encode(["success" => true, "data" => base64_encode($responseData)]));
+
 } elseif ($action === "access" || $action === "heartbeat") {
     if (!$response_b64) {
         fail(400, "invalid input -- check docs for info");
