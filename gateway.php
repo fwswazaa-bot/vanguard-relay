@@ -100,6 +100,11 @@ function build_payload(string $data, string $pubkey, string $type): string
     return $outerWrapper . $rito_payload;
 }
 
+if ($_SERVER['REQUEST_METHOD'] === 'GET' || $_SERVER['REQUEST_METHOD'] === 'HEAD') {
+    http_response_code(200);
+    die("OK");
+}
+
 $input = json_decode(file_get_contents("php://input"), true);
 if (!is_array($input)) {
     fail(400, "invalid input -- check docs for info");
