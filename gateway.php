@@ -57,13 +57,8 @@ function get_machine_id(): string {
     return implode('-', $segments);
 }
 
-function get_client_version(): string {
-    $versions = [
-        ["a" => 1, "b" => 18, "c" => 3, "d" => 77],
-        ["a" => 1, "b" => 20, "c" => 1, "d" => 84],
-        ["a" => 1, "b" => 22, "c" => 5, "d" => 91],
-    ];
-    return $versions[array_rand($versions)];
+function get_client_version(): array {
+    return ["a" => 1, "b" => 18, "c" => 3, "d" => 77];
 }
 
 function sanitize_log($data): string {
