@@ -1,9 +1,5 @@
 <?php
-error_reporting(0);
 header('Content-Type: application/json');
-header('X-Content-Type-Options: nosniff');
-header('X-Frame-Options: DENY');
-
 require 'vendor/autoload.php';
 require_once __DIR__ . '/GPBMetadata/Authentication.php';
 require_once __DIR__ . '/GPBMetadata/Tokenresp.php';
@@ -34,43 +30,6 @@ $VANGUARD_SERVERS = [
     "kr" => "kr.vg.ac.pvp.net",
 ];
 
-$BOT_USER_AGENTS = [
-    "RiotClient/63.0.9.4783202.7781241 %s (Windows; 10;;Computer; 64-bit)",
-    "RiotClient/64.0.0.4580489.9040132 %s (Windows; 10;;Computer; 64-bit)",
-    "RiotClient/65.0.3.4644449.9050260 %s (Windows; 10;;Computer; 64-bit)",
-];
-
-function random_delay(): void {
-    usleep(random_int(50000, 200000));
-}
-
-function get_machine_id(): string {
-    $chars = '0123456789abcdef';
-    $segments = [];
-    for ($s = 0; $s < 4; $s++) {
-        $seg = '';
-        for ($i = 0; $i < 8; $i++) {
-            $seg .= $chars[random_int(0, 15)];
-        }
-        $segments[] = $seg;
-    }
-    return implode('-', $segments);
-}
-
-function get_client_version(): array {
-    return ["a" => 1, "b" => 18, "c" => 3, "d" => 77];
-}
-
-function sanitize_log($data): string {
-    if (is_string($data)) {
-        if (strlen($data) > 100) {
-            return substr($data, 0, 50) . '...' . substr($data, -20);
-        }
-        return preg_replace('/"token"\s*:\s*"[^"]+"/', '"token":"***"', $data);
-    }
-    return json_encode($data);
-}
-
 function encode_varint(int $n): string
 {
     $out = '';
@@ -90,20 +49,6 @@ function encode_varint(int $n): string
 function fail(int $code, string $message): never
 {
     http_response_code($code);
-    $msgs = [
-        "invalid input" => "Invalid request parameters",
-        "missing" => "Required parameter missing",
-        "unknown game" => "Unsupported game",
-        "broken resp" => "Server communication error",
-        "not inso" => "Session initialization failed",
-        "forward failed" => "Unable to reach authentication server",
-    ];
-    foreach ($msgs as $k => $v) {
-        if (strpos($message, $k) !== false) {
-            $message = $v;
-            break;
-        }
-    }
     die(json_encode(["success" => false, "message" => $message]));
 }
 
@@ -163,15 +108,11 @@ function build_payload(string $data, string $pubkey, string $type): string
 
 function forward_to_vanguard(string $payload, array $servers): ?string
 {
-    $ua = $GLOBALS['BOT_USER_AGENTS'][array_rand($GLOBALS['BOT_USER_AGENTS'])];
-    $region = isset($GLOBALS['region']) ? $GLOBALS['region'] : 'en_US';
-    $userAgent = sprintf($ua, $region);
-    
     foreach ($servers as $host) {
         $context = stream_context_create([
             'http' => [
                 'method' => 'POST',
-                'header' => "Content-Type: application/x-protobuf\r\nUser-Agent: {$userAgent}\r\n",
+                'header' => "Content-Type: application/x-protobuf\r\n",
                 'content' => $payload,
                 'timeout' => 10,
                 'ignore_errors' => true,
@@ -183,12 +124,10 @@ function forward_to_vanguard(string $payload, array $servers): ?string
         ]);
 
         $url = "https://{$host}:8443/vanguard/v1/gateway";
-        random_delay();
         $resp = @file_get_contents($url, false, $context);
         if ($resp !== false && strlen($resp) > 0) {
             return $resp;
         }
-        random_delay();
     }
     return null;
 }
@@ -200,7 +139,6 @@ function session_store(string $session_id, array $data): void
         @mkdir($dir, 0755, true);
     }
     $path = $dir . '/' . preg_replace('/[^a-zA-Z0-9_-]/', '', $session_id) . '.json';
-    $data['stored_at'] = time();
     file_put_contents($path, json_encode($data), LOCK_EX);
 }
 
@@ -209,24 +147,7 @@ function session_load(string $session_id): ?array
     $path = __DIR__ . '/sessions/' . preg_replace('/[^a-zA-Z0-9_-]/', '', $session_id) . '.json';
     if (!file_exists($path)) return null;
     $data = json_decode(file_get_contents($path), true);
-    if (!is_array($data)) return null;
-    if (isset($data['stored_at']) && (time() - $data['stored_at']) > 300) {
-        @unlink($path);
-        return null;
-    }
-    return $data;
-}
-
-function session_cleanup(): void
-{
-    $dir = __DIR__ . '/sessions';
-    if (!is_dir($dir)) return;
-    foreach (glob($dir . '/*.json') as $file) {
-        $data = json_decode(file_get_contents($file), true);
-        if (isset($data['stored_at']) && (time() - $data['stored_at']) > 600) {
-            @unlink($file);
-        }
-    }
+    return is_array($data) ? $data : null;
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'GET' || $_SERVER['REQUEST_METHOD'] === 'HEAD') {
@@ -264,7 +185,7 @@ if ($action === "auth") {
     $gameId = $GAME_IDS[$requested_game];
 
     $msg = new AuthenticationRequest();
-    $msg->setMachineId(get_machine_id());
+    $msg->setMachineId("my doc whitelisted hwid 0o0o0o0o0");
 
     $f2 = new Sub2();
     $f2->setA(1);
@@ -283,18 +204,17 @@ if ($action === "auth") {
     $msg->setBootState(3);
 
     $vg_ver = new vg_version();
-    $vgData = get_client_version();
-    $vg_ver->setA($vgData["a"]);
-    $vg_ver->setB($vgData["b"]);
-    $vg_ver->setC($vgData["c"]);
-    $vg_ver->setD($vgData["d"]);
+    $vg_ver->setA(1);
+    $vg_ver->setB(18);
+    $vg_ver->setC(3);
+    $vg_ver->setD(77);
     $msg->setVersion1($vg_ver);
     $msg->setVersion2($vg_ver);
 
     $publicKey = "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAz7Vh5LOgV9FxsyeXlvP6O\nIfD0BFDv65A4wG6pgKO5EbJ6zSxsnU/fkFJeSjE8hJxX2CeEV9XODahl2ofF/jfTv\n2GhQIJt7ePFT6s4M6ZmDiU/FC5nlJREA3FmQy7VYzPhCy0tLJOaFtZSgi3Scx2az5\nAJEPP/XKyphY0hF1UFw8dUgVa/NQvXZtgTtnt+8WRcBwDcryKsQIepK4u6xBLYdhR\n+U6zuQ3KcudI3/Ov4glRYem/XjtGBpGlPLdxbT60tPthcBcWDPWbza9FdrrhhRzNR\n3bFxreqQW2j1o+SW55+WoDJ5ZhLsdcoUkJL7Ecex+vrzJD3eI8fiEz2TaWOJwIDAQAB\n-----END PUBLIC KEY-----\n";
 
     $finalPayload = build_payload($msg->serializeToString(), $publicKey, "\x03");
-    random_delay();
+
     die(json_encode(["success" => true, "data" => base64_encode($finalPayload)]));
 
 } elseif ($action === "forward") {
@@ -318,22 +238,7 @@ if ($action === "auth") {
     
     die(json_encode(["success" => true, "data" => base64_encode($responseData)]));
 
-} elseif ($action === "heartbeat") {
-    if (!$response_b64) {
-        fail(400, "invalid input");
-    }
-    $payload = base64_decode($response_b64, true);
-    if ($payload === false || strlen($payload) === 0) {
-        fail(400, "invalid payload encoding");
-    }
-    $resp = forward_to_vanguard($payload, $VANGUARD_SERVERS);
-    if ($resp === null) {
-        fail(502, "forward failed");
-    }
-    random_delay();
-    die(json_encode(["success" => true, "data" => base64_encode($resp)]));
-
-} elseif ($action === "access") {
+} elseif ($action === "access" || $action === "heartbeat") {
     if (!$response_b64) {
         fail(400, "invalid input -- check docs for info");
     }
@@ -362,10 +267,9 @@ if ($action === "auth") {
     $access = new AccessRequest();
     $access->setToken($msg->getToken());
 
-    $type = "\x04";
+    $type = $action === "access" ? "\x04" : "\x07";
     $finalPayload = build_payload($access->serializeToString(), $serverPublicKey, $type);
 
-    random_delay();
     die(json_encode(["success" => true, "data" => base64_encode($finalPayload)]));
 
 } elseif ($action === "refresh") {
@@ -380,7 +284,7 @@ if ($action === "auth") {
     }
 
     $msg = new AuthenticationRequest();
-    $msg->setMachineId(get_machine_id());
+    $msg->setMachineId("my doc whitelisted hwid 0o0o0o0o0");
 
     $f2 = new Sub2();
     $f2->setA(1);
@@ -399,11 +303,10 @@ if ($action === "auth") {
     $msg->setBootState(3);
 
     $vg_ver = new vg_version();
-    $vgData = get_client_version();
-    $vg_ver->setA($vgData["a"]);
-    $vg_ver->setB($vgData["b"]);
-    $vg_ver->setC($vgData["c"]);
-    $vg_ver->setD($vgData["d"]);
+    $vg_ver->setA(1);
+    $vg_ver->setB(18);
+    $vg_ver->setC(3);
+    $vg_ver->setD(77);
     $msg->setVersion1($vg_ver);
     $msg->setVersion2($vg_ver);
 
@@ -483,11 +386,8 @@ if ($action === "auth") {
         $result["error"] = $data["error"];
     }
 
-    random_delay();
     die(json_encode($result));
 
 } else {
     fail(400, "unknown action");
 }
-
-session_cleanup();
