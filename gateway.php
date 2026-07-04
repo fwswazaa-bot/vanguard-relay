@@ -1,4 +1,5 @@
 <?php
+// Updated: 2026-07-04 - No-restart session refresh support
 header('Content-Type: application/json');
 require 'vendor/autoload.php';
 require_once __DIR__ . '/GPBMetadata/Authentication.php';
