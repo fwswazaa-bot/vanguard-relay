@@ -1,4 +1,8 @@
 <?php
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    echo "OK";
+    exit;
+}
 header('Content-Type: application/json');
 require 'vendor/autoload.php';
 require_once __DIR__ . '/GPBMetadata/Authentication.php';
@@ -21,13 +25,6 @@ use phpseclib3\Crypt\RSA;
 $GAME_IDS = [
     "valo" => "com.riotgames.valorant",
     "league" => "com.riotgames.league",
-];
-
-$VANGUARD_SERVERS = [
-    "na" => "na.vg.ac.pvp.net",
-    "eu" => "eu.vg.ac.pvp.net",
-    "ap" => "ap.vg.ac.pvp.net",
-    "kr" => "kr.vg.ac.pvp.net",
 ];
 
 function encode_varint(int $n): string
@@ -100,59 +97,11 @@ function build_payload(string $data, string $pubkey, string $type): string
     $rsa = RSA::loadPublicKey($pubkey)->withPadding(RSA::ENCRYPTION_OAEP)->withHash('sha512')->withMGFHash('sha512');
     $rsaEncKey = $rsa->encrypt($key);
 
+    //useless to make the proto for the wrapper so just hardcode it -_-
     $rito_payload = hex2bin("52470100") . $rsaEncKey . $iv . $ciphertext . $tag;
     $outerWrapper = "\x08" . $type . "\x12" . encode_varint(strlen($rito_payload));
 
     return $outerWrapper . $rito_payload;
-}
-
-function forward_to_vanguard(string $payload, array $servers): ?string
-{
-    foreach ($servers as $host) {
-        $context = stream_context_create([
-            'http' => [
-                'method' => 'POST',
-                'header' => "Content-Type: application/x-protobuf\r\n",
-                'content' => $payload,
-                'timeout' => 10,
-                'ignore_errors' => true,
-            ],
-            'ssl' => [
-                'verify_peer' => false,
-                'verify_peer_name' => false,
-            ]
-        ]);
-
-        $url = "https://{$host}:8443/vanguard/v1/gateway";
-        $resp = @file_get_contents($url, false, $context);
-        if ($resp !== false && strlen($resp) > 0) {
-            return $resp;
-        }
-    }
-    return null;
-}
-
-function session_store(string $session_id, array $data): void
-{
-    $dir = __DIR__ . '/sessions';
-    if (!is_dir($dir)) {
-        @mkdir($dir, 0755, true);
-    }
-    $path = $dir . '/' . preg_replace('/[^a-zA-Z0-9_-]/', '', $session_id) . '.json';
-    file_put_contents($path, json_encode($data), LOCK_EX);
-}
-
-function session_load(string $session_id): ?array
-{
-    $path = __DIR__ . '/sessions/' . preg_replace('/[^a-zA-Z0-9_-]/', '', $session_id) . '.json';
-    if (!file_exists($path)) return null;
-    $data = json_decode(file_get_contents($path), true);
-    return is_array($data) ? $data : null;
-}
-
-if ($_SERVER['REQUEST_METHOD'] === 'GET' || $_SERVER['REQUEST_METHOD'] === 'HEAD') {
-    http_response_code(200);
-    die("OK");
 }
 
 $input = json_decode(file_get_contents("php://input"), true);
@@ -163,10 +112,9 @@ if (!is_array($input)) {
 $action = isset($input["action"]) && is_string($input["action"]) ? $input["action"] : "auth";
 $requested_game = isset($input["game"]) && is_string($input["game"]) ? $input["game"] : null;
 $sid = isset($input["sid"]) && is_string($input["sid"]) ? $input["sid"] : null;
-$gameToken = isset($input["gametoken"]) && is_string($input["gametoken"]) ? $input["gametoken"] : (isset($input["response"]) ? $input["response"] : null);
+$gameToken = isset($input["gametoken"]) && is_string($input["gametoken"]) ? $input["gametoken"] : null;
 $response_b64 = isset($input["response"]) && is_string($input["response"]) ? $input["response"] : null;
-$session_id = isset($input["session_id"]) && is_string($input["session_id"]) ? $input["session_id"] : null;
-$region = isset($input["region"]) && is_string($input["region"]) ? $input["region"] : null;
+
 
 if ($action === "auth") {
 
@@ -207,36 +155,15 @@ if ($action === "auth") {
     $vg_ver->setA(1);
     $vg_ver->setB(18);
     $vg_ver->setC(3);
-    $vg_ver->setD(77);
+    $vg_ver->setD(88);
     $msg->setVersion1($vg_ver);
     $msg->setVersion2($vg_ver);
 
-    $publicKey = "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAz7Vh5LOgV9FxsyeXlvP6O\nIfD0BFDv65A4wG6pgKO5EbJ6zSxsnU/fkFJeSjE8hJxX2CeEV9XODahl2ofF/jfTv\n2GhQIJt7ePFT6s4M6ZmDiU/FC5nlJREA3FmQy7VYzPhCy0tLJOaFtZSgi3Scx2az5\nAJEPP/XKyphY0hF1UFw8dUgVa/NQvXZtgTtnt+8WRcBwDcryKsQIepK4u6xBLYdhR\n+U6zuQ3KcudI3/Ov4glRYem/XjtGBpGlPLdxbT60tPthcBcWDPWbza9FdrrhhRzNR\n3bFxreqQW2j1o+SW55+WoDJ5ZhLsdcoUkJL7Ecex+vrzJD3eI8fiEz2TaWOJwIDAQAB\n-----END PUBLIC KEY-----\n";
+   $publicKey = "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAz7Vh5LOgV9FxsyeXlvP6O\nIfD0BFDv65A4wG6pgKO5EbJ6zSxsnU/fkFJeSjE8hJxX2CeEV9XODahl2ofF/jfTv\n2GhQIJt7ePFT6s4M6ZmDiU/FC5nlJREA3FmQy7VYzPhCy0tLJOaFtZSgi3Scx2az5\nAJEPP/XKyphY0hF1UFw8dUgVa/NQvXZtgTtnt+8WRcBwDcryKsQIepK4u6xBLYdhR\n+U6zuQ3KcudI3/Ov4glRYem/XjtGBpGlPLdxbT60tPthcBcWDPWbza9FdrrhhRzNR\n3bFxreqQW2j1o+SW55+WoDJ5ZhLsdcoUkJL7Ecex+vrzJD3eI8fiEz2TaWOJwIDAQAB\n-----END PUBLIC KEY-----\n";
 
     $finalPayload = build_payload($msg->serializeToString(), $publicKey, "\x03");
 
     die(json_encode(["success" => true, "data" => base64_encode($finalPayload)]));
-
-} elseif ($action === "forward") {
-    if (!$response_b64) {
-        $response_b64 = isset($input["gametoken"]) && is_string($input["gametoken"]) ? $input["gametoken"] : null;
-    }
-    if (!$response_b64) {
-        fail(400, "missing payload");
-    }
-    
-    $payload = base64_decode($response_b64, true);
-    if ($payload === false || strlen($payload) === 0) {
-        fail(400, "invalid payload encoding");
-    }
-    
-    $responseData = forward_to_vanguard($payload, $VANGUARD_SERVERS);
-    
-    if ($responseData === null) {
-        fail(502, "Vanguard forward failed: all servers failed");
-    }
-    
-    die(json_encode(["success" => true, "data" => base64_encode($responseData)]));
 
 } elseif ($action === "access" || $action === "heartbeat") {
     if (!$response_b64) {
@@ -251,8 +178,10 @@ if ($action === "auth") {
     try {
         $decrypted = decrypt_resp($responseBytes);
     } catch (\InvalidArgumentException $e) {
+        // fail(400, $e->getMessage());
         fail(400, "not inso generated session");
     } catch (\RuntimeException $e) {
+        // fail(400, $e->getMessage());
         fail(400, "not inso generated session");
     }
 
@@ -272,15 +201,59 @@ if ($action === "auth") {
 
     die(json_encode(["success" => true, "data" => base64_encode($finalPayload)]));
 
-} elseif ($action === "refresh") {
-    if (!$session_id || !$gameToken || !$sid || $requested_game === null) {
-        fail(400, "missing session_id, token, sid, or game");
+} elseif ($action === "forward") {
+    if (!$response_b64) {
+        fail(400, "invalid input -- check docs for info");
     }
 
-    // Build auth payload
-    $gameId = $GAME_IDS[$requested_game] ?? null;
-    if (!$gameId) {
-        fail(400, "unknown game type");
+    $payload = base64_decode($response_b64, true);
+    if ($payload === false || strlen($payload) === 0) {
+        fail(400, "invalid response encoding");
+    }
+
+    $servers = [
+        'na.vg.ac.pvp.net',
+        'eu.vg.ac.pvp.net',
+        'ap.vg.ac.pvp.net',
+        'kr.vg.ac.pvp.net',
+        'latam.vg.ac.pvp.net',
+        'br.vg.ac.pvp.net',
+    ];
+
+    $vgResponse = null;
+    foreach ($servers as $server) {
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL            => "https://{$server}:8443/vanguard/v1/gateway",
+            CURLOPT_POST           => true,
+            CURLOPT_POSTFIELDS     => $payload,
+            CURLOPT_HTTPHEADER     => ['Content-Type: application/x-protobuf'],
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_TIMEOUT        => 10,
+        ]);
+        $resp = curl_exec($ch);
+        curl_close($ch);
+
+        if ($resp !== false && strlen($resp) > 0) {
+            $vgResponse = $resp;
+            break;
+        }
+    }
+
+    if ($vgResponse === null) {
+        fail(502, "all Vanguard servers failed");
+    }
+
+    die(json_encode(["success" => true, "data" => base64_encode($vgResponse)]));
+
+} elseif ($action === "refresh") {
+    $session_id = isset($input["session_id"]) && is_string($input["session_id"]) ? $input["session_id"] : null;
+    $token = isset($input["token"]) && is_string($input["token"]) ? $input["token"] : null;
+    $region = isset($input["region"]) && is_string($input["region"]) ? $input["region"] : "eu";
+
+    if (!$session_id || !$token || !$sid) {
+        fail(400, "missing session_id, token, or sid");
     }
 
     $msg = new AuthenticationRequest();
@@ -292,21 +265,17 @@ if ($action === "auth") {
     $f2->setVersion("10.0.19045");
     $msg->setField2($f2);
 
-    $msg->setGameToken($gameToken);
-
-    if ($requested_game === "valo") {
-        $msg->setExternalSid($sid);
-    }
-
+    $msg->setGameToken($token);
+    $msg->setExternalSid($sid);
     $msg->setClientRsaPublicKey("MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxeE1IYzUyaLOGSNGW5aWW0E8te3f\nJfBf8BYimapm/H69YNBl29ZCSf0ntyy6PMqXcEXGim5NfDjJ6CWa9y6+BG1/KpNWYBe3qLw3\nu+Zdg4LdkkVANWiSPAcaI/MIpVsnVjve7xzuHk1ZAlil3haA2r2C0mBIHX4EIJozNoWk9M4O\nzsRHWNmKh4icjHTJoE+5tX/D1RNgCmPnKVGS+40cX6cXWqX0I1v8eIV2k6uH9e6Ut8aSVQeV\n01upa2Kq1WYjsD6Gw9SM3C980tP1cXvqjmOKOqv12Dzo8nwBVr8MbuC86XIHtT9NtOFB4ogF\n2+55HtCL+PUGdf0S/dGM7c746QIDAQAB\n");
-    $msg->setGameId($gameId);
+    $msg->setGameId("com.riotgames.valorant");
     $msg->setBootState(3);
 
     $vg_ver = new vg_version();
     $vg_ver->setA(1);
     $vg_ver->setB(18);
     $vg_ver->setC(3);
-    $vg_ver->setD(77);
+    $vg_ver->setD(88);
     $msg->setVersion1($vg_ver);
     $msg->setVersion2($vg_ver);
 
@@ -314,25 +283,38 @@ if ($action === "auth") {
 
     $authPayload = build_payload($msg->serializeToString(), $publicKey, "\x03");
 
-    // Forward auth to Vanguard
-    $region = $region ?: "eu";
-    $serversToUse = [];
-    if (isset($VANGUARD_SERVERS[$region])) {
-        $serversToUse[] = $VANGUARD_SERVERS[$region];
-    }
-    $serversToUse = array_unique(array_merge($serversToUse, array_values($VANGUARD_SERVERS)));
+    $servers = ['na.vg.ac.pvp.net', 'eu.vg.ac.pvp.net', 'ap.vg.ac.pvp.net', 'kr.vg.ac.pvp.net'];
+    if ($region === "latam") array_unshift($servers, 'latam.vg.ac.pvp.net');
+    if ($region === "br") array_unshift($servers, 'br.vg.ac.pvp.net');
+    $servers = array_unique($servers);
 
-    $authResponse = forward_to_vanguard($authPayload, $serversToUse);
+    $authResponse = null;
+    foreach ($servers as $server) {
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL            => "https://{$server}:8443/vanguard/v1/gateway",
+            CURLOPT_POST           => true,
+            CURLOPT_POSTFIELDS     => $authPayload,
+            CURLOPT_HTTPHEADER     => ['Content-Type: application/x-protobuf'],
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_TIMEOUT        => 10,
+        ]);
+        $resp = curl_exec($ch);
+        curl_close($ch);
+        if ($resp !== false && strlen($resp) > 0) {
+            $authResponse = $resp;
+            break;
+        }
+    }
+
     if ($authResponse === null) {
-        session_store($session_id, ["status" => "failed", "error" => "auth forward failed"]);
         fail(502, "auth forward failed");
     }
 
-    // Decrypt auth response
     try {
         $decrypted = decrypt_resp($authResponse);
     } catch (\Exception $e) {
-        session_store($session_id, ["status" => "failed", "error" => "decrypt failed: " . $e->getMessage()]);
         fail(502, "decrypt failed");
     }
 
@@ -341,48 +323,68 @@ if ($action === "auth") {
 
     $serverPublicKey = $authRespMsg->getServerRsaPublicKey();
     if (!$serverPublicKey) {
-        session_store($session_id, ["status" => "failed", "error" => "no server public key"]);
         fail(400, "broken auth response");
     }
 
-    // Build access payload
     $access = new AccessRequest();
     $access->setToken($authRespMsg->getToken());
 
     $accessPayload = build_payload($access->serializeToString(), $serverPublicKey, "\x04");
 
-    // Forward access to Vanguard
-    $accessResponse = forward_to_vanguard($accessPayload, $serversToUse);
+    $accessResponse = null;
+    foreach ($servers as $server) {
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL            => "https://{$server}:8443/vanguard/v1/gateway",
+            CURLOPT_POST           => true,
+            CURLOPT_POSTFIELDS     => $accessPayload,
+            CURLOPT_HTTPHEADER     => ['Content-Type: application/x-protobuf'],
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_TIMEOUT        => 10,
+        ]);
+        $resp = curl_exec($ch);
+        curl_close($ch);
+        if ($resp !== false && strlen($resp) > 0) {
+            $accessResponse = $resp;
+            break;
+        }
+    }
+
     if ($accessResponse === null) {
-        session_store($session_id, ["status" => "failed", "error" => "access forward failed"]);
         fail(502, "access forward failed");
     }
 
-    // Store the ticket
-    session_store($session_id, [
+    $dir = __DIR__ . '/sessions';
+    if (!is_dir($dir)) @mkdir($dir, 0755, true);
+    $path = $dir . '/' . preg_replace('/[^a-zA-Z0-9_-]/', '', $session_id) . '.json';
+    file_put_contents($path, json_encode([
         "status" => "ready",
         "ticket" => base64_encode($accessResponse),
         "created_at" => time(),
-    ]);
+    ]), LOCK_EX);
 
     die(json_encode(["success" => true, "session_id" => $session_id]));
 
 } elseif ($action === "poll") {
-    if (!$session_id) {
-        fail(400, "missing session_id");
+    $session_id = isset($input["session_id"]) && is_string($input["session_id"]) ? $input["session_id"] : null;
+    if (!$session_id) fail(400, "missing session_id");
+
+    $path = __DIR__ . '/sessions/' . preg_replace('/[^a-zA-Z0-9_-]/', '', $session_id) . '.json';
+    if (!file_exists($path)) fail(404, "session not found");
+
+    $data = json_decode(file_get_contents($path), true);
+    if (!is_array($data)) fail(404, "session not found");
+
+    if (isset($data["created_at"]) && (time() - $data["created_at"]) > 300) {
+        @unlink($path);
+        fail(404, "session expired");
     }
 
-    $data = session_load($session_id);
-    if ($data === null) {
-        fail(404, "session not found");
-    }
-
-    $status = $data["status"] ?? "pending";
-    $result = ["status" => $status];
-
-    if ($status === "ready" && isset($data["ticket"])) {
+    $result = ["status" => ($data["status"] ?? "pending")];
+    if ($result["status"] === "ready" && isset($data["ticket"])) {
         $result["ticket"] = $data["ticket"];
-    } elseif ($status === "failed" && isset($data["error"])) {
+    } elseif ($result["status"] === "failed" && isset($data["error"])) {
         $result["error"] = $data["error"];
     }
 
