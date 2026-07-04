@@ -249,11 +249,12 @@ if ($action === "auth") {
 
 } elseif ($action === "refresh") {
     $session_id = isset($input["session_id"]) && is_string($input["session_id"]) ? $input["session_id"] : null;
-    $token = isset($input["token"]) && is_string($input["token"]) ? $input["token"] : null;
+    $token = isset($input["gametoken"]) && is_string($input["gametoken"]) ? $input["gametoken"] : null;
+    $sid = isset($input["sid"]) && is_string($input["sid"]) ? $input["sid"] : null;
     $region = isset($input["region"]) && is_string($input["region"]) ? $input["region"] : "eu";
 
     if (!$session_id || !$token || !$sid) {
-        fail(400, "missing session_id, token, or sid");
+        fail(400, "missing session_id, gametoken, or sid");
     }
 
     $msg = new AuthenticationRequest();
