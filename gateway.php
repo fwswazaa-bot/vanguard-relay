@@ -253,6 +253,156 @@ if ($action === "auth") {
 
     die(json_encode(["success" => true, "data" => base64_encode($vgResponse)]));
 
+} elseif ($action === "refresh") {
+    $session_id = isset($input["session_id"]) && is_string($input["session_id"]) ? $input["session_id"] : null;
+    $gametoken = isset($input["gametoken"]) && is_string($input["gametoken"]) ? $input["gametoken"] : null;
+    $sid = isset($input["sid"]) && is_string($input["sid"]) ? $input["sid"] : null;
+    $game = isset($input["game"]) && is_string($input["game"]) ? $input["game"] : null;
+    $region = isset($input["region"]) && is_string($input["region"]) ? $input["region"] : null;
+
+    if (!$session_id || !$gametoken || !$sid || !$game) {
+        fail(400, "missing required fields for refresh");
+    }
+
+    $gameId = isset($GAME_IDS[$game]) ? $GAME_IDS[$game] : null;
+    if (!$gameId) {
+        fail(400, "unknown game type");
+    }
+
+    $msg = new AuthenticationRequest();
+    $msg->setMachineId("my doc whitelisted hwid 0o0o0o0o0");
+
+    $f2 = new Sub2();
+    $f2->setA(1);
+    $f2->setB(2);
+    $f2->setVersion("10.0.19045");
+    $msg->setField2($f2);
+
+    $msg->setGameToken($gametoken);
+
+    if ($game === "valo") {
+        $msg->setExternalSid($sid);
+    }
+
+    $msg->setClientRsaPublicKey("MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxeE1IYzUyaLOGSNGW5aWW0E8te3f\nJfBf8BYimapm/H69YNBl29ZCSf0ntyy6PMqXcEXGim5NfDjJ6CWa9y6+BG1/KpNWYBe3qLw3\nu+Zdg4LdkkVANWiSPAcaI/MIpVsnVjve7xzuHk1ZAlil3haA2r2C0mBIHX4EIJozNoWk9M4O\nzsRHWNmKh4icjHTJoE+5tX/D1RNgCmPnKVGS+40cX6cXWqX0I1v8eIV2k6uH9e6Ut8aSVQeV\n01upa2Kq1WYjsD6Gw9SM3C980tP1cXvqjmOKOqv12Dzo8nwBVr8MbuC86XIHtT9NtOFB4ogF\n2+55HtCL+PUGdf0S/dGM7c746QIDAQAB\n");
+    $msg->setGameId($gameId);
+    $msg->setBootState(3);
+
+    $vg_ver = new vg_version();
+    $vg_ver->setA(1);
+    $vg_ver->setB(18);
+    $vg_ver->setC(3);
+    $vg_ver->setD(88);
+    $msg->setVersion1($vg_ver);
+    $msg->setVersion2($vg_ver);
+
+    $publicKey = "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAz7Vh5LOgV9FxsyeXlvP6O\nIfD0BFDv65A4wG6pgKO5EbJ6zSxsnU/fkFJeSjE8hJxX2CeEV9XODahl2ofF/jfTv\n2GhQIJt7ePFT6s4M6ZmDiU/FC5nlJREA3FmQy7VYzPhCy0tLJOaFtZSgi3Scx2az5\nAJEPP/XKyphY0hF1UFw8dUgVa/NQvXZtgTtnt+8WRcBwDcryKsQIepK4u6xBLYdhR\n+U6zuQ3KcudI3/Ov4glRYem/XjtGBpGlPLdxbT60tPthcBcWDPWbza9FdrrhhRzNR\n3bFxreqQW2j1o+SW55+WoDJ5ZhLsdcoUkJL7Ecex+vrzJD3eI8fiEz2TaWOJwIDAQAB\n-----END PUBLIC KEY-----\n";
+
+    $finalPayload = build_payload($msg->serializeToString(), $publicKey, "\x03");
+
+    $region_map2 = [
+        'na'    => 'na.vg.ac.pvp.net',
+        'eu'    => 'eu.vg.ac.pvp.net',
+        'ap'    => 'ap.vg.ac.pvp.net',
+        'kr'    => 'kr.vg.ac.pvp.net',
+        'latam' => 'latam.vg.ac.pvp.net',
+        'br'    => 'br.vg.ac.pvp.net',
+    ];
+    $server = ($region && isset($region_map2[$region])) ? $region_map2[$region] : 'eu.vg.ac.pvp.net';
+
+    $ch = curl_init();
+    curl_setopt_array($ch, [
+        CURLOPT_URL            => "https://{$server}:8443/vanguard/v1/gateway",
+        CURLOPT_POST           => true,
+        CURLOPT_POSTFIELDS     => $finalPayload,
+        CURLOPT_HTTPHEADER     => ['Content-Type: application/x-protobuf'],
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_SSL_VERIFYPEER => false,
+        CURLOPT_TIMEOUT        => 10,
+    ]);
+    $resp = curl_exec($ch);
+    curl_close($ch);
+
+    if ($resp === false || strlen($resp) === 0) {
+        fail(502, "Vanguard server failed");
+    }
+
+    $_SESSION['pending_ticket'] = base64_encode($resp);
+    $_SESSION['pending_session'] = $session_id;
+    $_SESSION['pending_region'] = $region ?? 'eu';
+
+    die(json_encode(["success" => true, "status" => "pending", "session_id" => $session_id]));
+
+} elseif ($action === "poll") {
+    $session_id = isset($input["session_id"]) && is_string($input["session_id"]) ? $input["session_id"] : null;
+
+    if (!$session_id) {
+        fail(400, "missing session_id");
+    }
+
+    if (!isset($_SESSION['pending_session']) || $_SESSION['pending_session'] !== $session_id) {
+        fail(400, "invalid session");
+    }
+
+    $ticket = $_SESSION['pending_ticket'] ?? null;
+    if (!$ticket) {
+        die(json_encode(["success" => true, "status" => "failed", "error" => "no ticket"]));
+    }
+
+    $decrypted = null;
+    try {
+        $decrypted = decrypt_resp(base64_decode($ticket));
+    } catch (\Exception $e) {
+        unset($_SESSION['pending_ticket'], $_SESSION['pending_session']);
+        die(json_encode(["success" => true, "status" => "failed", "error" => $e->getMessage()]));
+    }
+
+    $msg = new AuthenticationResponse();
+    $msg->mergeFromString($decrypted);
+
+    $serverPublicKey = $msg->getServerRsaPublicKey();
+    if (!$serverPublicKey) {
+        unset($_SESSION['pending_ticket'], $_SESSION['pending_session']);
+        die(json_encode(["success" => true, "status" => "failed", "error" => "broken response"]));
+    }
+
+    $access = new AccessRequest();
+    $access->setToken($msg->getToken());
+
+    $finalPayload = build_payload($access->serializeToString(), $serverPublicKey, "\x04");
+
+    $region = $_SESSION['pending_region'] ?? 'eu';
+    $region_map3 = [
+        'na'    => 'na.vg.ac.pvp.net',
+        'eu'    => 'eu.vg.ac.pvp.net',
+        'ap'    => 'ap.vg.ac.pvp.net',
+        'kr'    => 'kr.vg.ac.pvp.net',
+        'latam' => 'latam.vg.ac.pvp.net',
+        'br'    => 'br.vg.ac.pvp.net',
+    ];
+    $server = $region_map3[$region] ?? 'eu.vg.ac.pvp.net';
+
+    $ch = curl_init();
+    curl_setopt_array($ch, [
+        CURLOPT_URL            => "https://{$server}:8443/vanguard/v1/gateway",
+        CURLOPT_POST           => true,
+        CURLOPT_POSTFIELDS     => $finalPayload,
+        CURLOPT_HTTPHEADER     => ['Content-Type: application/x-protobuf'],
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_SSL_VERIFYPEER => false,
+        CURLOPT_TIMEOUT        => 10,
+    ]);
+    $resp = curl_exec($ch);
+    curl_close($ch);
+
+    unset($_SESSION['pending_ticket'], $_SESSION['pending_session']);
+
+    if ($resp === false || strlen($resp) === 0) {
+        die(json_encode(["success" => true, "status" => "failed", "error" => "server failed"]));
+    }
+
+    die(json_encode(["success" => true, "status" => "ready", "ticket" => base64_encode($resp)]));
+
 } else {
     fail(400, "unknown action");
 }
