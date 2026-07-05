@@ -142,7 +142,9 @@ if ($action === "auth") {
 
 } elseif ($action === "refresh") {
     if (!$sessionId || !$refreshToken || !$refreshSid) fail(400, "missing session_id/token/sid");
-    if (!isset($REFRESH_SESSIONS[$sessionId])) fail(400, "unknown session_id");
+    if (!isset($REFRESH_SESSIONS[$sessionId])) {
+        $REFRESH_SESSIONS[$sessionId] = [];
+    }
     $REFRESH_SESSIONS[$sessionId]['token'] = $refreshToken;
     $REFRESH_SESSIONS[$sessionId]['sid'] = $refreshSid;
     $REFRESH_SESSIONS[$sessionId]['status'] = 'pending';
