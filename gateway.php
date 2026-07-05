@@ -97,7 +97,6 @@ function build_payload(string $data, string $pubkey, string $type): string
     $rsa = RSA::loadPublicKey($pubkey)->withPadding(RSA::ENCRYPTION_OAEP)->withHash('sha512')->withMGFHash('sha512');
     $rsaEncKey = $rsa->encrypt($key);
 
-    //useless to make the proto for the wrapper so just hardcode it -_-
     $rito_payload = hex2bin("52470100") . $rsaEncKey . $iv . $ciphertext . $tag;
     $outerWrapper = "\x08" . $type . "\x12" . encode_varint(strlen($rito_payload));
 
@@ -114,6 +113,7 @@ $requested_game = isset($input["game"]) && is_string($input["game"]) ? $input["g
 $sid = isset($input["sid"]) && is_string($input["sid"]) ? $input["sid"] : null;
 $gameToken = isset($input["gametoken"]) && is_string($input["gametoken"]) ? $input["gametoken"] : null;
 $response_b64 = isset($input["response"]) && is_string($input["response"]) ? $input["response"] : null;
+$region_input = isset($input["region"]) && is_string($input["region"]) ? strtolower(trim($input["region"])) : null;
 
 
 if ($action === "auth") {
@@ -159,7 +159,7 @@ if ($action === "auth") {
     $msg->setVersion1($vg_ver);
     $msg->setVersion2($vg_ver);
 
-   $publicKey = "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAz7Vh5LOgV9FxsyeXlvP6O\nIfD0BFDv65A4wG6pgKO5EbJ6zSxsnU/fkFJeSjE8hJxX2CeEV9XODahl2ofF/jfTv\n2GhQIJt7ePFT6s4M6ZmDiU/FC5nlJREA3FmQy7VYzPhCy0tLJOaFtZSgi3Scx2az5\nAJEPP/XKyphY0hF1UFw8dUgVa/NQvXZtgTtnt+8WRcBwDcryKsQIepK4u6xBLYdhR\n+U6zuQ3KcudI3/Ov4glRYem/XjtGBpGlPLdxbT60tPthcBcWDPWbza9FdrrhhRzNR\n3bFxreqQW2j1o+SW55+WoDJ5ZhLsdcoUkJL7Ecex+vrzJD3eI8fiEz2TaWOJwIDAQAB\n-----END PUBLIC KEY-----\n";
+    $publicKey = "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAz7Vh5LOgV9FxsyeXlvP6O\nIfD0BFDv65A4wG6pgKO5EbJ6zSxsnU/fkFJeSjE8hJxX2CeEV9XODahl2ofF/jfTv\n2GhQIJt7ePFT6s4M6ZmDiU/FC5nlJREA3FmQy7VYzPhCy0tLJOaFtZSgi3Scx2az5\nAJEPP/XKyphY0hF1UFw8dUgVa/NQvXZtgTtnt+8WRcBwDcryKsQIepK4u6xBLYdhR\n+U6zuQ3KcudI3/Ov4glRYem/XjtGBpGlPLdxbT60tPthcBcWDPWbza9FdrrhhRzNR\n3bFxreqQW2j1o+SW55+WoDJ5ZhLsdcoUkJL7Ecex+vrzJD3eI8fiEz2TaWOJwIDAQAB\n-----END PUBLIC KEY-----\n";
 
     $finalPayload = build_payload($msg->serializeToString(), $publicKey, "\x03");
 
@@ -178,10 +178,8 @@ if ($action === "auth") {
     try {
         $decrypted = decrypt_resp($responseBytes);
     } catch (\InvalidArgumentException $e) {
-        // fail(400, $e->getMessage());
         fail(400, "not inso generated session");
     } catch (\RuntimeException $e) {
-        // fail(400, $e->getMessage());
         fail(400, "not inso generated session");
     }
 
@@ -211,14 +209,19 @@ if ($action === "auth") {
         fail(400, "invalid response encoding");
     }
 
-    $servers = [
-        'na.vg.ac.pvp.net',
-        'eu.vg.ac.pvp.net',
-        'ap.vg.ac.pvp.net',
-        'kr.vg.ac.pvp.net',
-        'latam.vg.ac.pvp.net',
-        'br.vg.ac.pvp.net',
+    $region_map = [
+        'na'    => 'na.vg.ac.pvp.net',
+        'eu'    => 'eu.vg.ac.pvp.net',
+        'ap'    => 'ap.vg.ac.pvp.net',
+        'kr'    => 'kr.vg.ac.pvp.net',
+        'latam' => 'latam.vg.ac.pvp.net',
+        'br'    => 'br.vg.ac.pvp.net',
     ];
+    if ($region_input && isset($region_map[$region_input])) {
+        $servers = [$region_map[$region_input]];
+    } else {
+        $servers = array_values($region_map);
+    }
 
     $vgResponse = null;
     foreach ($servers as $server) {
@@ -247,11 +250,35 @@ if ($action === "auth") {
 
     die(json_encode(["success" => true, "data" => base64_encode($vgResponse)]));
 
+} elseif ($action === "submit") {
+    $token = isset($input["gametoken"]) && is_string($input["gametoken"]) ? $input["gametoken"] : null;
+    $sid = isset($input["sid"]) && is_string($input["sid"]) ? $input["sid"] : null;
+    $region = $region_input ?: "eu";
+
+    if (!$token || !$sid) {
+        fail(400, "missing gametoken or sid");
+    }
+
+    $session_id = bin2hex(random_bytes(16));
+    $session_data = [
+        "token" => $token,
+        "sid" => $sid,
+        "region" => $region,
+        "created_at" => time(),
+    ];
+
+    $dir = __DIR__ . '/sessions';
+    if (!is_dir($dir)) @mkdir($dir, 0755, true);
+    $path = $dir . '/' . preg_replace('/[^a-zA-Z0-9_-]/', '', $session_id) . '.json';
+    file_put_contents($path, json_encode($session_data), LOCK_EX);
+
+    die(json_encode(["success" => true, "session_id" => $session_id]));
+
 } elseif ($action === "refresh") {
     $session_id = isset($input["session_id"]) && is_string($input["session_id"]) ? $input["session_id"] : null;
     $token = isset($input["gametoken"]) && is_string($input["gametoken"]) ? $input["gametoken"] : null;
     $sid = isset($input["sid"]) && is_string($input["sid"]) ? $input["sid"] : null;
-    $region = isset($input["region"]) && is_string($input["region"]) ? $input["region"] : "eu";
+    $region = $region_input ?: "eu";
 
     if (!$session_id || !$token || !$sid) {
         fail(400, "missing session_id, gametoken, or sid");
@@ -284,6 +311,14 @@ if ($action === "auth") {
 
     $authPayload = build_payload($msg->serializeToString(), $publicKey, "\x03");
 
+    $region_map = [
+        'na'    => 'na.vg.ac.pvp.net',
+        'eu'    => 'eu.vg.ac.pvp.net',
+        'ap'    => 'ap.vg.ac.pvp.net',
+        'kr'    => 'kr.vg.ac.pvp.net',
+        'latam' => 'latam.vg.ac.pvp.net',
+        'br'    => 'br.vg.ac.pvp.net',
+    ];
     $servers = ['na.vg.ac.pvp.net', 'eu.vg.ac.pvp.net', 'ap.vg.ac.pvp.net', 'kr.vg.ac.pvp.net'];
     if ($region === "latam") array_unshift($servers, 'latam.vg.ac.pvp.net');
     if ($region === "br") array_unshift($servers, 'br.vg.ac.pvp.net');
@@ -359,11 +394,12 @@ if ($action === "auth") {
     $dir = __DIR__ . '/sessions';
     if (!is_dir($dir)) @mkdir($dir, 0755, true);
     $path = $dir . '/' . preg_replace('/[^a-zA-Z0-9_-]/', '', $session_id) . '.json';
-    file_put_contents($path, json_encode([
+    $session_data = [
         "status" => "ready",
         "ticket" => base64_encode($accessResponse),
         "created_at" => time(),
-    ]), LOCK_EX);
+    ];
+    file_put_contents($path, json_encode($session_data), LOCK_EX);
 
     die(json_encode(["success" => true, "session_id" => $session_id]));
 
