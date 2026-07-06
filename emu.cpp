@@ -147,11 +147,6 @@ void UnblockRiotTelemetry() {
     }
 }
 
-bool PhpGatewayForward(const std::string& payloadB64, std::string& outResponse) {
-    std::string jsonBody = "{\"action\":\"forward\",\"response\":\"" + payloadB64 + "\"}";
-    return SendToPhpGateway(jsonBody, outResponse);
-}
-
 bool ExtractFromPacket(const std::vector<uint8_t>& payload, std::string& token, std::string& sid) {
     std::string payloadStr(payload.begin(), payload.end());
     
