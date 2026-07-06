@@ -12,8 +12,6 @@
 #include <algorithm>
 #include <cstdio>
 #include <process.h>
-#include <sstream>
-#include <iomanip>
 
 #pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "winhttp.lib")
@@ -22,21 +20,16 @@ std::atomic<bool> g_Shutdown(false);
 std::mutex g_ConsoleMutex;
 std::mutex g_SessionMutex;
 std::mutex g_LogMutex;
-std::mutex g_RefreshMutex;
-std::atomic<bool> g_Refreshing(false);
 bool g_SessionActive = false;
 bool g_PhpServerRunning = false;
 bool g_VgcStoppedLogged = false;
 
 std::string g_CachedToken;
 std::string g_CachedSid;
-std::string g_SessionId;
-std::string g_Region = "eu";
 bool g_SessionInitialized = false;
 HANDLE g_PipeHandle = INVALID_HANDLE_VALUE;
 int g_HeartbeatCount = 0;
 bool g_NeedsValidation = false;
-uint64_t g_Last0x3E9Send = 0;
 
 const wchar_t* VANGUARD_PIPE_NAME = L"\\\\.\\pipe\\933823D3-C77B-4BAE-89D7-A92B567236BC";
 const wchar_t* VALORANT_EXE_NAME = L"VALORANT-Win64-Shipping.exe";
@@ -154,13 +147,9 @@ void UnblockRiotTelemetry() {
     }
 }
 
-std::string GenerateSessionId() {
-    std::stringstream ss;
-    ss << std::hex << std::setfill('0');
-    for (int i = 0; i < 32; i++) {
-        ss << std::setw(1) << (rand() % 16);
-    }
-    return ss.str();
+bool PhpGatewayForward(const std::string& payloadB64, std::string& outResponse) {
+    std::string jsonBody = "{\"action\":\"forward\",\"response\":\"" + payloadB64 + "\"}";
+    return SendToPhpGateway(jsonBody, outResponse);
 }
 
 bool ExtractFromPacket(const std::vector<uint8_t>& payload, std::string& token, std::string& sid) {
@@ -362,18 +351,6 @@ bool PhpGatewayAccess(const std::string& responseB64, std::string& outResponse) 
     return SendToPhpGateway(jsonBody, outResponse);
 }
 
-bool PhpGatewayRefresh(const std::string& sessionId, const std::string& token, const std::string& sid,
-                       const std::string& game, const std::string& region, std::string& outResponse) {
-    std::string jsonBody = "{\"action\":\"refresh\",\"session_id\":\"" + sessionId + "\",\"gametoken\":\"" + token +
-                          "\",\"sid\":\"" + sid + "\",\"game\":\"" + game + "\",\"region\":\"" + region + "\"}";
-    return SendToPhpGateway(jsonBody, outResponse);
-}
-
-bool PhpGatewayPoll(const std::string& sessionId, std::string& outResponse) {
-    std::string jsonBody = "{\"action\":\"poll\",\"session_id\":\"" + sessionId + "\"}";
-    return SendToPhpGateway(jsonBody, outResponse);
-}
-
 bool SendToVanguard(const std::string& payload, std::string& outResponse) {
     for (const wchar_t* server : VANGUARD_SERVERS) {
         std::string response;
@@ -516,98 +493,6 @@ bool InjectTicket(const std::vector<uint8_t>& ticket) {
     return false;
 }
 
-void TriggerSessionRefresh() {
-    std::lock_guard<std::mutex> lock(g_RefreshMutex);
-    if (g_Refreshing.load()) {
-        Log("REFRESH", "Refresh already in progress, skipping", 11);
-        return;
-    }
-    g_Refreshing = true;
-    
-    std::thread([]() {
-        std::string token, sid, region;
-        {
-            std::lock_guard<std::mutex> lock(g_SessionMutex);
-            token = g_CachedToken;
-            sid = g_CachedSid;
-            region = g_Region;
-        }
-        
-        if (token.empty() || sid.empty()) {
-            Log("REFRESH", "No token/sid cached, cannot refresh", 12);
-            g_Refreshing = false;
-            return;
-        }
-        
-        std::string sessionId = GenerateSessionId();
-        Log("REFRESH", "Triggering session refresh, session_id: " + sessionId, 10);
-        
-        std::string refreshResp;
-        if (!PhpGatewayRefresh(sessionId, token, sid, "valo", region, refreshResp)) {
-            Log("REFRESH", "Refresh request failed", 12);
-            g_Refreshing = false;
-            return;
-        }
-        
-        Log("REFRESH", "Polling for new ticket...", 10);
-        int pollCount = 0;
-        const int maxPolls = 20;
-        
-        while (pollCount < maxPolls && !g_Shutdown) {
-            std::this_thread::sleep_for(std::chrono::seconds(3));
-            
-            std::string pollResp;
-            if (!PhpGatewayPoll(sessionId, pollResp)) {
-                Log("REFRESH", "Poll request failed", 12);
-                break;
-            }
-            
-            pollCount++;
-            
-            try {
-                std::regex statusRegex(R"x("status"\s*:\s*"([^"]+)")x");
-                std::smatch statusMatch;
-                if (std::regex_search(pollResp, statusMatch, statusRegex)) {
-                    std::string status = statusMatch.str(1);
-                    
-                    if (status == "ready") {
-                        std::regex ticketRegex(R"x("ticket"\s*:\s*"([^"]+)")x");
-                        std::smatch ticketMatch;
-                        if (std::regex_search(pollResp, ticketMatch, ticketRegex)) {
-                            std::string ticketB64 = ticketMatch.str(1);
-                            std::vector<uint8_t> ticket = Base64Decode(ticketB64);
-                            
-                            Log("REFRESH", "Got new ticket, injecting...", 10);
-                            if (InjectTicket(ticket)) {
-                                Log("REFRESH", "Session refreshed successfully!", 10);
-                            }
-                            g_Refreshing = false;
-                            return;
-                        }
-                    } else if (status == "failed") {
-                        std::regex errorRegex(R"x("error"\s*:\s*"([^"]+)")x");
-                        std::smatch errorMatch;
-                        std::string error = "unknown";
-                        if (std::regex_search(pollResp, errorMatch, errorRegex)) {
-                            error = errorMatch.str(1);
-                        }
-                        Log("REFRESH", "Refresh failed: " + error, 12);
-                        g_Refreshing = false;
-                        return;
-                    }
-                }
-            } catch (const std::regex_error& e) {
-                Log("REFRESH", "Regex error: " + std::string(e.what()), 12);
-            }
-            
-            Log("REFRESH", "Still pending, polling again... (" + std::to_string(pollCount) + "/" + std::to_string(maxPolls) + ")", 11);
-        }
-        
-        Log("REFRESH", "Poll timeout after " + std::to_string(pollCount) + " attempts", 12);
-        g_Refreshing = false;
-    }).detach();
-}
-
 void ClientHandler(HANDLE hPipe) {
     Log("C", "Client connected to pipe!", 10);
     
@@ -617,7 +502,6 @@ void ClientHandler(HANDLE hPipe) {
     DWORD bytesRead;
     std::string cachedToken;
     std::string cachedSid;
-    bool tokenExtracted = false;
     
     while (!g_Shutdown) {
         if (!ReadFile(hPipe, buffer.data(), buffer.size(), &bytesRead, NULL) || bytesRead == 0) {
@@ -711,10 +595,6 @@ void ClientHandler(HANDLE hPipe) {
                 }
                     
                 case 2:
-                    if (g_SessionActive) {
-                        Log("SERVER", "Server list request - triggering session refresh...", 11);
-                        TriggerSessionRefresh();
-                    }
                     Log("SERVER", "Server list request - stopping VGC...", 12);
                     system("sc stop vgc >nul 2>&1");
                     response = CraftAuthResponseSimple(magic);
@@ -745,7 +625,6 @@ void ClientHandler(HANDLE hPipe) {
                             }
                             Log("AUTH", "SID cached: " + sid, 10);
                         }
-                        tokenExtracted = true;
                     } else {
                         Log("WARN", "Could not extract token/sid", 12);
                     }
@@ -771,14 +650,10 @@ void ClientHandler(HANDLE hPipe) {
                     
                     response = CraftAuthResponse(magic, protocolVersion, uuidBytes);
                     
-                    if (wasSessionActive) {
-                        Log("REFRESH", "Session already active - triggering quick refresh, skipping full mint", 11);
-                        TriggerSessionRefresh();
-                    } else {
-                        Log("AUTH", "Auto-triggering gateway mint...", 10);
-                        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-                        
-                        if (!cachedToken.empty() && !cachedSid.empty()) {
+                    Log("AUTH", "Auto-triggering gateway mint...", 10);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                    
+                    if (!cachedToken.empty() && !cachedSid.empty()) {
                             Log("GATEWAY", "Sending to PHP relay...", 10);
                             std::string phpResponse;
                             if (PhpGatewayAuth(cachedToken, cachedSid, "valo", phpResponse)) {
@@ -817,7 +692,6 @@ void ClientHandler(HANDLE hPipe) {
                                                         {
                                                             std::lock_guard<std::mutex> lock(g_SessionMutex);
                                                             g_SessionInitialized = true;
-                                                            g_SessionId = "";
                                                         }
                                                     } else {
                                                         Log("GATEWAY", "Access forward failed", 12);
@@ -841,7 +715,6 @@ void ClientHandler(HANDLE hPipe) {
                                 Log("GATEWAY", "PHP relay request failed", 12);
                             }
                         }
-                    }
                     break;
                 }
                 
@@ -1001,18 +874,6 @@ int main() {
     
     Log("INIT", "Pipe server starting...", 10);
     std::thread pipeThread(PipeServer);
-    
-    Log("INIT", "No-restart mode - refresh triggers on state change + periodic", 10);
-    
-    std::thread refreshTimerThread([]() {
-        while (!g_Shutdown) {
-            std::this_thread::sleep_for(std::chrono::seconds(180));
-            if (g_SessionActive && !g_CachedToken.empty()) {
-                Log("REFRESH", "Periodic refresh check...", 11);
-                TriggerSessionRefresh();
-            }
-        }
-    });
     
     ProcessMonitor();
     
