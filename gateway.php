@@ -27,11 +27,6 @@ $GAME_IDS = [
     "league" => "com.riotgames.league",
 ];
 
-$sessionsDir = __DIR__ . '/sessions';
-if (!is_dir($sessionsDir)) {
-    mkdir($sessionsDir, 0777, true);
-}
-
 function encode_varint(int $n): string
 {
     $out = '';
@@ -259,13 +254,12 @@ if ($action === "auth") {
     die(json_encode(["success" => true, "data" => base64_encode($vgResponse)]));
 
 } elseif ($action === "refresh") {
-    $session_id = isset($input["session_id"]) && is_string($input["session_id"]) ? $input["session_id"] : null;
     $gametoken = isset($input["token"]) && is_string($input["token"]) ? $input["token"] : null;
     $sid = isset($input["sid"]) && is_string($input["sid"]) ? $input["sid"] : null;
     $game = isset($input["game"]) && is_string($input["game"]) ? $input["game"] : null;
     $region = isset($input["region"]) && is_string($input["region"]) ? strtolower(trim($input["region"])) : "eu";
 
-    if (!$session_id || !$gametoken || !$sid || !$game) {
+    if (!$gametoken || !$sid || !$game) {
         fail(400, "missing required fields for refresh");
     }
 
@@ -332,31 +326,21 @@ if ($action === "auth") {
         fail(502, "Vanguard server failed");
     }
 
-    $filePath = $sessionsDir . '/' . basename($session_id) . '.dat';
-    file_put_contents($filePath, $resp);
-
-    die(json_encode(["success" => true, "session_id" => $session_id]));
+    die(json_encode(["success" => true, "status" => "pending", "pending" => base64_encode($resp)]));
 
 } elseif ($action === "poll") {
-    $session_id = isset($input["session_id"]) && is_string($input["session_id"]) ? $input["session_id"] : null;
+    $pending_b64 = isset($input["pending"]) && is_string($input["pending"]) ? $input["pending"] : null;
+    $region = isset($input["region"]) && is_string($input["region"]) ? strtolower(trim($input["region"])) : "eu";
 
-    if (!$session_id) {
-        fail(400, "missing session_id");
+    if (!$pending_b64) {
+        fail(400, "missing pending token");
     }
 
-    $filePath = $sessionsDir . '/' . basename($session_id) . '.dat';
-
-    if (!file_exists($filePath)) {
-        die(json_encode(["success" => true, "status" => "pending"]));
-    }
-
-    $rawResp = file_get_contents($filePath);
-
+    $raw = base64_decode($pending_b64);
     $decrypted = null;
     try {
-        $decrypted = decrypt_resp($rawResp);
+        $decrypted = decrypt_resp($raw);
     } catch (\Exception $e) {
-        unlink($filePath);
         die(json_encode(["success" => true, "status" => "failed", "error" => $e->getMessage()]));
     }
 
@@ -365,7 +349,6 @@ if ($action === "auth") {
 
     $serverPublicKey = $msg->getServerRsaPublicKey();
     if (!$serverPublicKey) {
-        unlink($filePath);
         die(json_encode(["success" => true, "status" => "failed", "error" => "broken response"]));
     }
 
@@ -382,7 +365,6 @@ if ($action === "auth") {
         'latam' => 'latam.vg.ac.pvp.net',
         'br'    => 'br.vg.ac.pvp.net',
     ];
-    $region = isset($input["region"]) && is_string($input["region"]) ? strtolower(trim($input["region"])) : "eu";
     $server = isset($region_map3[$region]) ? $region_map3[$region] : 'eu.vg.ac.pvp.net';
 
     $ch = curl_init();
@@ -397,8 +379,6 @@ if ($action === "auth") {
     ]);
     $resp = curl_exec($ch);
     curl_close($ch);
-
-    unlink($filePath);
 
     if ($resp === false || strlen($resp) === 0) {
         die(json_encode(["success" => true, "status" => "failed", "error" => "server failed"]));
