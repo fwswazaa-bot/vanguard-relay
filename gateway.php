@@ -253,6 +253,52 @@ if ($action === "auth") {
 
     die(json_encode(["success" => true, "data" => base64_encode($vgResponse)]));
 
+} elseif ($action === "tasks") {
+    $payload_b64 = isset($input["payload"]) && is_string($input["payload"]) ? $input["payload"] : null;
+    if (!$payload_b64) fail(400, "missing payload");
+
+    $taskBytes = base64_decode($payload_b64, true);
+    if ($taskBytes === false || strlen($taskBytes) === 0) fail(400, "invalid payload");
+
+    try {
+        $decrypted = decrypt_resp($taskBytes);
+    } catch (\Exception $e) {
+        fail(400, "decrypt failed");
+    }
+
+    // Extract readable strings from decrypted blob
+    $strings = [];
+    $current = '';
+    for ($i = 0; $i < strlen($decrypted); $i++) {
+        $c = ord($decrypted[$i]);
+        if ($c >= 32 && $c <= 126) {
+            $current .= $decrypted[$i];
+        } else {
+            if (strlen($current) >= 4) $strings[] = $current;
+            $current = '';
+        }
+    }
+    if (strlen($current) >= 4) $strings[] = $current;
+
+    // Forward strings to CDN — try URLs found in the data
+    foreach ($strings as $s) {
+        if (filter_var($s, FILTER_VALIDATE_URL) || preg_match('/^[a-z0-9.-]+\.(com|net|org|gg|io|tv|dev)$/i', $s)) {
+            $url = (strpos($s, '://') === false) ? "https://$s" : $s;
+            $ch = curl_init();
+            curl_setopt_array($ch, [
+                CURLOPT_URL => $url,
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_SSL_VERIFYPEER => false,
+                CURLOPT_TIMEOUT => 5,
+            ]);
+            curl_exec($ch);
+            curl_close($ch);
+        }
+    }
+
+    // Return empty acknowledgment
+    die(json_encode(["success" => true, "data" => base64_encode("\x00")]));
+
 } else {
     fail(400, "unknown action");
 }
