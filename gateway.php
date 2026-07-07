@@ -142,7 +142,7 @@ if ($action === "auth") {
     $gameId = $GAME_IDS[$requested_game];
 
     $msg = new AuthenticationRequest();
-    $msg->setMachineId("my doc whitelisted hwid 0o0o0o0o0");
+    $msg->setMachineId(bin2hex(random_bytes(16)) . '-' . bin2hex(random_bytes(8)) . '-' . bin2hex(random_bytes(4)));
 
     $f2 = new Sub2();
     $f2->setA(1);
