@@ -116,14 +116,6 @@ $gameToken = isset($input["gametoken"]) && is_string($input["gametoken"]) ? $inp
 $response_b64 = isset($input["response"]) && is_string($input["response"]) ? $input["response"] : null;
 $region_input = isset($input["region"]) && is_string($input["region"]) ? strtolower(trim($input["region"])) : null;
 
-$REGION_MAP = [
-    'na'    => 'na.vg.ac.pvp.net',
-    'eu'    => 'eu.vg.ac.pvp.net',
-    'ap'    => 'ap.vg.ac.pvp.net',
-    'kr'    => 'kr.vg.ac.pvp.net',
-    'latam' => 'latam.vg.ac.pvp.net',
-    'br'    => 'br.vg.ac.pvp.net',
-];
 
 if ($action === "auth") {
 
@@ -142,7 +134,7 @@ if ($action === "auth") {
     $gameId = $GAME_IDS[$requested_game];
 
     $msg = new AuthenticationRequest();
-    $msg->setMachineId(bin2hex(random_bytes(16)) . '-' . bin2hex(random_bytes(8)) . '-' . bin2hex(random_bytes(4)));
+    $msg->setMachineId("my doc whitelisted hwid 0o0o0o0o0");
 
     $f2 = new Sub2();
     $f2->setA(1);
@@ -220,10 +212,18 @@ if ($action === "auth") {
         fail(400, "invalid response encoding");
     }
 
-    if ($region_input && isset($REGION_MAP[$region_input])) {
-        $servers = [$REGION_MAP[$region_input]];
+    $region_map = [
+        'na'    => 'na.vg.ac.pvp.net',
+        'eu'    => 'eu.vg.ac.pvp.net',
+        'ap'    => 'ap.vg.ac.pvp.net',
+        'kr'    => 'kr.vg.ac.pvp.net',
+        'latam' => 'latam.vg.ac.pvp.net',
+        'br'    => 'br.vg.ac.pvp.net',
+    ];
+    if ($region_input && isset($region_map[$region_input])) {
+        $servers = [$region_map[$region_input]];
     } else {
-        $servers = array_values($REGION_MAP);
+        $servers = array_values($region_map);
     }
 
     $vgResponse = null;
