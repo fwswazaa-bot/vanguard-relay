@@ -254,3 +254,5 @@ if ($action === "auth") {
     die(json_encode(["success" => true, "data" => base64_encode($vgResponse)]));
 
 } else {
+    fail(400, "unknown action");
+}
