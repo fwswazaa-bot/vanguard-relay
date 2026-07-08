@@ -227,6 +227,7 @@ if ($action === "auth") {
     }
 
     $vgResponse = null;
+    $respondedRegion = 'unknown';
     foreach ($servers as $server) {
         $ch = curl_init();
         curl_setopt_array($ch, [
@@ -243,6 +244,8 @@ if ($action === "auth") {
 
         if ($resp !== false && strlen($resp) > 0) {
             $vgResponse = $resp;
+            $respondedRegion = array_search($server, $REGION_MAP);
+            if ($respondedRegion === false) $respondedRegion = 'unknown';
             break;
         }
     }
@@ -251,7 +254,7 @@ if ($action === "auth") {
         fail(502, "all Vanguard servers failed");
     }
 
-    die(json_encode(["success" => true, "data" => base64_encode($vgResponse)]));
+    die(json_encode(["success" => true, "data" => base64_encode($vgResponse), "region" => $respondedRegion]));
 
 } elseif ($action === "refresh") {
     $gametoken = isset($input["token"]) && is_string($input["token"]) ? $input["token"] : null;
@@ -361,6 +364,9 @@ if ($action === "auth") {
             error_log("[GW] [MOD] found module id=$moduleId");
 
             // Try all regions for each module — modules may only exist on certain regions
+            $rawData = null;
+            $rawRgn = null;
+            $decryptedMod = null;
             foreach ($REGION_MAP as $rgn => $host) {
                 $cdnUrl = "https://$host:8443/vanguard/v1/cdn/mod/$moduleId?verify=$verifyParam";
                 error_log("[GW] [MOD] trying $rgn: $cdnUrl");
@@ -379,9 +385,10 @@ if ($action === "auth") {
 
                 if ($httpCode === 200 && $modData !== false && strlen($modData) > 0) {
                     error_log("[GW] [MOD] downloaded module $moduleId " . strlen($modData) . "B from $rgn");
+                    $rawData = $modData;
+                    $rawRgn = $rgn;
 
-                    // Try to derive AES key from verify parameter or session
-                    // The verify param may contain key material after a separator
+                    // Try to derive AES key from verify parameter
                     $parts = explode('.', $verifyParam);
                     $aesKey = null;
                     if (count($parts) >= 2) {
@@ -393,50 +400,51 @@ if ($action === "auth") {
                         }
                     }
 
-                    // Try decryption with found or derived key
-                    $decryptedMod = null;
                     if ($aesKey) {
-                        // Try AES-256-GCM with IV from first 12 bytes + tag from last 16
+                        // Try AES-256-GCM (IV=first 12 bytes, tag=last 16)
                         $iv = substr($modData, 0, 12);
                         $tag = substr($modData, -16);
                         $ct = substr($modData, 12, -16);
-                        if (strlen($iv) === 12) {
+                        if (strlen($iv) === 12)
                             $decryptedMod = @openssl_decrypt($ct, 'aes-256-gcm', $aesKey, OPENSSL_RAW_DATA, $iv, $tag);
-                        }
                         // Try AES-256-CBC
-                        if ($decryptedMod === false) {
+                        if ($decryptedMod === false || $decryptedMod === null) {
                             $iv = substr($modData, 0, 16);
                             $ct = substr($modData, 16);
                             $decryptedMod = @openssl_decrypt($ct, 'aes-256-cbc', $aesKey, OPENSSL_RAW_DATA, $iv);
                         }
                         // Try AES-256-ECB
-                        if ($decryptedMod === false) {
+                        if ($decryptedMod === false || $decryptedMod === null)
                             $decryptedMod = @openssl_decrypt($modData, 'aes-256-ecb', $aesKey, OPENSSL_RAW_DATA);
-                        }
                     }
 
-                    // Try blank/fixed key if we still don't have a valid decrypt
+                    // Try blank key as last resort
                     if ($decryptedMod === false || $decryptedMod === null) {
                         $fixedKey = str_repeat("\x00", 32);
                         $decryptedMod = @openssl_decrypt($modData, 'aes-256-ecb', $fixedKey, OPENSSL_RAW_DATA);
                     }
 
                     if ($decryptedMod !== false && $decryptedMod !== null && strlen($decryptedMod) > 0) {
-                        error_log("[GW] [MOD] decrypted module $moduleId (" . strlen($decryptedMod) . "B)");
+                        error_log("[GW] [MOD] decrypted module $moduleId (" . strlen($decryptedMod) . "B) from $rgn");
                         $moduleResults[] = [
                             "id" => $moduleId,
                             "data" => base64_encode($decryptedMod),
+                            "raw" => base64_encode($rawData),
+                            "encrypted" => false,
                         ];
-                    } else {
-                        error_log("[GW] [MOD] decrypt failed for module $moduleId");
-                        // Still record the module — return raw data so emulator can retry
-                        $moduleResults[] = [
-                            "id" => $moduleId,
-                            "data" => base64_encode($modData),
-                            "encrypted" => true,
-                        ];
+                        break;
                     }
                 }
+            }
+            // If no region had the module, try first raw download as fallback
+            if ($rawData !== null && !in_array($moduleId, array_column($moduleResults, 'id'))) {
+                error_log("[GW] [MOD] decrypt failed for $moduleId on all regions, returning raw");
+                $moduleResults[] = [
+                    "id" => $moduleId,
+                    "data" => base64_encode($rawData),
+                    "raw" => base64_encode($rawData),
+                    "encrypted" => true,
+                ];
             }
         }
     }
