@@ -311,10 +311,11 @@ if ($action === "auth") {
         "created" => time()
     ]));
 
-    die(json_encode(["success" => true, "session_id" => $session_id]));
+    die(json_encode(["success" => true, "pending" => $session_id]));
 
 } elseif ($action === "poll") {
-    $session_id = isset($input["session_id"]) && is_string($input["session_id"]) ? $input["session_id"] : null;
+    $session_id = isset($input["session_id"]) && is_string($input["session_id"]) ? $input["session_id"] :
+                  (isset($input["pending"]) && is_string($input["pending"]) ? $input["pending"] : null);
     if (!$session_id) fail(400, "missing session_id");
 
     $sessFile = __DIR__ . "/sessions/$session_id.json";
