@@ -351,24 +351,108 @@ if ($action === "auth") {
     }
     if (strlen($current) >= 4) $strings[] = $current;
 
-    // Forward strings to CDN — try URLs found in the data
+    // Find module URLs in extracted strings
+    $moduleResults = [];
     foreach ($strings as $s) {
-        if (filter_var($s, FILTER_VALIDATE_URL) || preg_match('/^[a-z0-9.-]+\.(com|net|org|gg|io|tv|dev)$/i', $s)) {
-            $url = (strpos($s, '://') === false) ? "https://$s" : $s;
-            $ch = curl_init();
-            curl_setopt_array($ch, [
-                CURLOPT_URL => $url,
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_SSL_VERIFYPEER => false,
-                CURLOPT_TIMEOUT => 5,
-            ]);
-            curl_exec($ch);
-            curl_close($ch);
+        // Match Vanguard CDN module URLs
+        if (preg_match('#/v1/cdn/mod/(\d+)\?verify=([^\s]+)#i', $s, $m)) {
+            $moduleId = $m[1];
+            $verifyParam = $m[2];
+            error_log("[GW] [MOD] found module id=$moduleId");
+
+            // Build full CDN URL for each region
+            foreach ($REGION_MAP as $rgn => $host) {
+                $cdnUrl = "https://$host:8443/vanguard/v1/cdn/mod/$moduleId?verify=$verifyParam";
+                error_log("[GW] [MOD] trying $rgn: $cdnUrl");
+
+                $ch = curl_init();
+                curl_setopt_array($ch, [
+                    CURLOPT_URL => $cdnUrl,
+                    CURLOPT_RETURNTRANSFER => true,
+                    CURLOPT_SSL_VERIFYPEER => false,
+                    CURLOPT_TIMEOUT => 15,
+                    CURLOPT_FOLLOWLOCATION => true,
+                ]);
+                $modData = curl_exec($ch);
+                $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                curl_close($ch);
+
+                if ($httpCode === 200 && $modData !== false && strlen($modData) > 0) {
+                    error_log("[GW] [MOD] downloaded module $moduleId " . strlen($modData) . "B from $rgn");
+
+                    // Try to derive AES key from verify parameter or session
+                    // The verify param may contain key material after a separator
+                    $parts = explode('.', $verifyParam);
+                    $aesKey = null;
+                    if (count($parts) >= 2) {
+                        $keyCandidate = base64_decode($parts[1], true);
+                        if ($keyCandidate !== false && strlen($keyCandidate) === 32) {
+                            $aesKey = $keyCandidate;
+                        } elseif ($keyCandidate !== false && strlen($keyCandidate) > 32) {
+                            $aesKey = substr($keyCandidate, 0, 32);
+                        }
+                    }
+
+                    // Try decryption with found or derived key
+                    $decryptedMod = null;
+                    if ($aesKey) {
+                        // Try AES-256-GCM with IV from first 12 bytes + tag from last 16
+                        $iv = substr($modData, 0, 12);
+                        $tag = substr($modData, -16);
+                        $ct = substr($modData, 12, -16);
+                        if (strlen($iv) === 12) {
+                            $decryptedMod = @openssl_decrypt($ct, 'aes-256-gcm', $aesKey, OPENSSL_RAW_DATA, $iv, $tag);
+                        }
+                        // Try AES-256-CBC
+                        if ($decryptedMod === false) {
+                            $iv = substr($modData, 0, 16);
+                            $ct = substr($modData, 16);
+                            $decryptedMod = @openssl_decrypt($ct, 'aes-256-cbc', $aesKey, OPENSSL_RAW_DATA, $iv);
+                        }
+                        // Try AES-256-ECB
+                        if ($decryptedMod === false) {
+                            $decryptedMod = @openssl_decrypt($modData, 'aes-256-ecb', $aesKey, OPENSSL_RAW_DATA);
+                        }
+                    }
+
+                    // Try blank/fixed key if we still don't have a valid decrypt
+                    if ($decryptedMod === false || $decryptedMod === null) {
+                        $fixedKey = str_repeat("\x00", 32);
+                        $decryptedMod = @openssl_decrypt($modData, 'aes-256-ecb', $fixedKey, OPENSSL_RAW_DATA);
+                    }
+
+                    if ($decryptedMod !== false && $decryptedMod !== null && strlen($decryptedMod) > 0) {
+                        error_log("[GW] [MOD] decrypted module $moduleId (" . strlen($decryptedMod) . "B)");
+                        $moduleResults[] = [
+                            "id" => $moduleId,
+                            "data" => base64_encode($decryptedMod),
+                        ];
+                    } else {
+                        error_log("[GW] [MOD] decrypt failed for module $moduleId");
+                        // Still record the module — return raw data so emulator can retry
+                        $moduleResults[] = [
+                            "id" => $moduleId,
+                            "data" => base64_encode($modData),
+                            "encrypted" => true,
+                        ];
+                    }
+                    break; // Don't try other regions once one works
+                }
+            }
         }
     }
 
-    // Return empty acknowledgment
-    die(json_encode(["success" => true, "data" => base64_encode("\x00")]));
+    // Build task response protobuf-like structure
+    // Each module result gets wrapped in the expected task response format
+    $taskResult = [
+        "modules" => $moduleResults,
+        "count" => count($moduleResults),
+    ];
+
+    // Encode task result as raw bytes to send back
+    $resultPayload = json_encode($taskResult);
+
+    die(json_encode(["success" => true, "data" => base64_encode($resultPayload)]));
 
 } else {
     fail(400, "unknown action");
