@@ -360,7 +360,7 @@ if ($action === "auth") {
             $verifyParam = $m[2];
             error_log("[GW] [MOD] found module id=$moduleId");
 
-            // Build full CDN URL for each region
+            // Try all regions for each module — modules may only exist on certain regions
             foreach ($REGION_MAP as $rgn => $host) {
                 $cdnUrl = "https://$host:8443/vanguard/v1/cdn/mod/$moduleId?verify=$verifyParam";
                 error_log("[GW] [MOD] trying $rgn: $cdnUrl");
@@ -436,7 +436,6 @@ if ($action === "auth") {
                             "encrypted" => true,
                         ];
                     }
-                    break; // Don't try other regions once one works
                 }
             }
         }
