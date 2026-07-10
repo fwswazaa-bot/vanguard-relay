@@ -45,13 +45,29 @@ function encode_varint(int $n): string
 
 function fail(int $code, string $message): never
 {
+    error_log("[GW] FAIL http={$code} msg={$message}");
     http_response_code($code);
     die(json_encode(["success" => false, "message" => $message]));
+}
+
+// Structured log helper — all GW logs go to Render's error stream
+function gw_log(string $tag, string $msg, ?string $hexData = null): void
+{
+    $ts = date('H:i:s');
+    $line = "[GW][{$ts}][{$tag}] {$msg}";
+    if ($hexData !== null && strlen($hexData) > 0) {
+        $bytes = str_split(substr($hexData, 0, 48));
+        $hex   = implode(' ', array_map(fn($b) => strtoupper(bin2hex($b)), $bytes));
+        $print = preg_replace('/[^\x20-\x7e]/', '.', substr($hexData, 0, 48));
+        $line .= " | hex[0..".min(48,strlen($hexData))."]: {$hex} | ascii: {$print}";
+    }
+    error_log($line);
 }
 
 function decrypt_resp(string $payload): string
 {
     $minLength = 9 + 256 + 12 + 16;
+    gw_log("DECRYPT", "input=" . strlen($payload) . "B header=" . strtoupper(bin2hex(substr($payload,0,9))), $payload);
     if (strlen($payload) < $minLength) {
         throw new \InvalidArgumentException('payload too short');
     }
@@ -74,14 +90,18 @@ PEM;
     $aesKey = $rsa->decrypt($encryptedKey);
 
     if ($aesKey === false || strlen($aesKey) !== 32) {
+        gw_log("DECRYPT", "RSA FAIL: aesKey=" . ($aesKey === false ? "false" : strlen($aesKey)."B wrong size") . " encKey_head=" . strtoupper(bin2hex(substr($encryptedKey,0,16))));
         throw new \RuntimeException('not inso generated session');
     }
+    gw_log("DECRYPT", "RSA OK aesKey=" . strtoupper(bin2hex($aesKey)) . " iv=" . strtoupper(bin2hex($iv)) . " ct=" . strlen($ciphertext) . "B tag=" . strtoupper(bin2hex($tag)));
 
     $plaintext = openssl_decrypt($ciphertext, 'aes-256-gcm', $aesKey, OPENSSL_RAW_DATA, $iv, $tag);
 
     if ($plaintext === false) {
+        gw_log("DECRYPT", "AES-GCM FAIL: tag mismatch or corrupt ct. ct_head=" . strtoupper(bin2hex(substr($ciphertext,0,16))));
         throw new \RuntimeException('failed to decrypt');
     }
+    gw_log("DECRYPT", "OK plaintext=" . strlen($plaintext) . "B", $plaintext);
 
     return $plaintext;
 }
@@ -239,18 +259,25 @@ if ($action === "auth") {
             CURLOPT_SSL_VERIFYPEER => false,
             CURLOPT_TIMEOUT        => 10,
         ]);
-        $resp = curl_exec($ch);
+        $resp    = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlErr  = curl_error($ch);
         curl_close($ch);
+
+        gw_log("FORWARD", "server={$server} http={$httpCode} resp=" . strlen($resp ?: "") . "B" . ($curlErr ? " curl_err={$curlErr}" : ""), $resp ?: "");
 
         if ($resp !== false && strlen($resp) > 0) {
             $vgResponse = $resp;
             $respondedRegion = array_search($server, $REGION_MAP);
             if ($respondedRegion === false) $respondedRegion = 'unknown';
+            gw_log("FORWARD", "SUCCESS region={$respondedRegion} resp_head=" . strtoupper(bin2hex(substr($resp,0,9))));
             break;
         }
+        gw_log("FORWARD", "MISS server={$server} trying next");
     }
 
     if ($vgResponse === null) {
+        gw_log("FORWARD", "FAIL all servers exhausted");
         fail(502, "all Vanguard servers failed");
     }
 
@@ -389,38 +416,62 @@ if ($action === "auth") {
                     $rawData = $modData;
                     $rawRgn = $rgn;
 
-                    // Try to derive AES key from verify parameter
-                    $parts = explode('.', $verifyParam);
+                    // verify format: <uint32_timestamp>-<base64url_key>.<float_suffix>
+                    // Key sits between the first '-' and the first '.'
                     $aesKey = null;
-                    if (count($parts) >= 2) {
-                        $keyCandidate = base64_decode($parts[1], true);
-                        if ($keyCandidate !== false && strlen($keyCandidate) === 32) {
-                            $aesKey = $keyCandidate;
-                        } elseif ($keyCandidate !== false && strlen($keyCandidate) > 32) {
-                            $aesKey = substr($keyCandidate, 0, 32);
+                    $dashPos = strpos($verifyParam, '-');
+                    $dotPos  = strpos($verifyParam, '.');
+                    if ($dashPos !== false && $dotPos !== false && $dotPos > $dashPos) {
+                        $keyB64url = substr($verifyParam, $dashPos + 1, $dotPos - $dashPos - 1);
+                        // base64url -> standard
+                        $keyB64std = str_replace(['-', '_'], ['+', '/'], $keyB64url);
+                        $kraw = base64_decode($keyB64std, true);
+                        if ($kraw !== false) {
+                            $ksz = strlen($kraw);
+                            if ($ksz === 16 || $ksz === 24 || $ksz === 32) {
+                                $aesKey = $kraw;
+                            } elseif ($ksz > 32) {
+                                $aesKey = substr($kraw, 0, 32); // AES-256
+                            } elseif ($ksz > 24) {
+                                $aesKey = substr($kraw, 0, 24); // AES-192
+                            } elseif ($ksz > 16) {
+                                $aesKey = substr($kraw, 0, 16); // AES-128
+                            }
                         }
                     }
 
                     if ($aesKey) {
-                        // Try AES-256-GCM (IV=first 12 bytes, tag=last 16)
-                        $iv = substr($modData, 0, 12);
+                        $ksz    = strlen($aesKey);
+                        $cipher = $ksz === 16 ? 'aes-128' : ($ksz === 24 ? 'aes-192' : 'aes-256');
+
+                        // AES-GCM (IV=first 12, tag=last 16)
+                        $iv  = substr($modData, 0, 12);
                         $tag = substr($modData, -16);
-                        $ct = substr($modData, 12, -16);
+                        $ct  = substr($modData, 12, -16);
                         if (strlen($iv) === 12)
-                            $decryptedMod = @openssl_decrypt($ct, 'aes-256-gcm', $aesKey, OPENSSL_RAW_DATA, $iv, $tag);
-                        // Try AES-256-CBC
-                        if ($decryptedMod === false || $decryptedMod === null) {
+                            $decryptedMod = @openssl_decrypt($ct, "{$cipher}-gcm", $aesKey, OPENSSL_RAW_DATA, $iv, $tag);
+
+                        // AES-CBC (IV=first 16)
+                        if (!$decryptedMod) {
                             $iv = substr($modData, 0, 16);
                             $ct = substr($modData, 16);
-                            $decryptedMod = @openssl_decrypt($ct, 'aes-256-cbc', $aesKey, OPENSSL_RAW_DATA, $iv);
+                            $decryptedMod = @openssl_decrypt($ct, "{$cipher}-cbc", $aesKey, OPENSSL_RAW_DATA, $iv);
                         }
-                        // Try AES-256-ECB
-                        if ($decryptedMod === false || $decryptedMod === null)
-                            $decryptedMod = @openssl_decrypt($modData, 'aes-256-ecb', $aesKey, OPENSSL_RAW_DATA);
+
+                        // AES-CTR (IV=first 16)
+                        if (!$decryptedMod) {
+                            $iv = substr($modData, 0, 16);
+                            $ct = substr($modData, 16);
+                            $decryptedMod = @openssl_decrypt($ct, "{$cipher}-ctr", $aesKey, OPENSSL_RAW_DATA, $iv);
+                        }
+
+                        // AES-ECB (no IV)
+                        if (!$decryptedMod)
+                            $decryptedMod = @openssl_decrypt($modData, "{$cipher}-ecb", $aesKey, OPENSSL_RAW_DATA);
                     }
 
-                    // Try blank key as last resort
-                    if ($decryptedMod === false || $decryptedMod === null) {
+                    // Zero key last resort
+                    if (!$decryptedMod) {
                         $fixedKey = str_repeat("\x00", 32);
                         $decryptedMod = @openssl_decrypt($modData, 'aes-256-ecb', $fixedKey, OPENSSL_RAW_DATA);
                     }
@@ -461,6 +512,179 @@ if ($action === "auth") {
     $resultPayload = json_encode($taskResult);
 
     die(json_encode(["success" => true, "data" => base64_encode($resultPayload)]));
+
+} elseif ($action === "hb_full") {
+    // Full heartbeat round-trip: build HB wire -> POST to Riot -> parse task CDN URLs
+    // Input: auth_resp (b64 Riot AUTH response bytes), session_id, region
+    $auth_resp_b64  = isset($input["auth_resp"])  && is_string($input["auth_resp"])  ? $input["auth_resp"]  : null;
+    $emu_session_id = isset($input["session_id"]) && is_string($input["session_id"]) ? $input["session_id"] : "default";
+    $hb_region      = isset($input["region"])     && is_string($input["region"])     ? strtolower(trim($input["region"])) : "eu";
+
+    if (!$auth_resp_b64) fail(400, "missing auth_resp");
+
+    $authRespBytes = base64_decode($auth_resp_b64, true);
+    if ($authRespBytes === false || strlen($authRespBytes) === 0) fail(400, "invalid auth_resp encoding");
+
+    try {
+        $decryptedAuth = decrypt_resp($authRespBytes);
+    } catch (\Exception $e) {
+        fail(400, "auth_resp decrypt failed");
+    }
+
+    $authMsg = new AuthenticationResponse();
+    $authMsg->mergeFromString($decryptedAuth);
+    $serverPubKey = $authMsg->getServerRsaPublicKey();
+    $sessionToken = $authMsg->getToken();
+    if (!$serverPubKey || !$sessionToken) fail(400, "broken auth_resp");
+
+    // Build HB wire (type 0x07)
+    $hbAccess = new AccessRequest();
+    $hbAccess->setToken($sessionToken);
+    $hbPayload = build_payload($hbAccess->serializeToString(), $serverPubKey, "\x07");
+
+    // POST to Riot Gateway
+    $hbServer = isset($REGION_MAP[$hb_region]) ? $REGION_MAP[$hb_region] : "eu.vg.ac.pvp.net";
+    $hbCh = curl_init();
+    curl_setopt_array($hbCh, [
+        CURLOPT_URL            => "https://{$hbServer}:8443/vanguard/v1/gateway",
+        CURLOPT_POST           => true,
+        CURLOPT_POSTFIELDS     => $hbPayload,
+        CURLOPT_HTTPHEADER     => ["Content-Type: application/x-protobuf"],
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_SSL_VERIFYPEER => false,
+        CURLOPT_TIMEOUT        => 15,
+    ]);
+    $hbResp = curl_exec($hbCh);
+    $hbCode = curl_getinfo($hbCh, CURLINFO_HTTP_CODE);
+    curl_close($hbCh);
+
+    error_log("[GW] [HB] hb_full http={$hbCode} resp=" . strlen($hbResp ?: "") . "B");
+
+    if (!$hbResp || strlen($hbResp) === 0) {
+        die(json_encode(["success" => true, "tasks" => [], "hb_error" => "riot_unreachable"]));
+    }
+
+    // Try to decrypt HB response (same private key)
+    $hbDecrypted = null;
+    try {
+        $hbDecrypted = decrypt_resp($hbResp);
+    } catch (\Exception $e) {
+        die(json_encode(["success" => true, "tasks" => [], "hb_error" => "decrypt_failed"]));
+    }
+
+    // Parse updated server pubkey/token from HB response
+    $hbMsg = new AuthenticationResponse();
+    $hbMsg->mergeFromString($hbDecrypted);
+    $newSrvKey = $hbMsg->getServerRsaPublicKey();
+    $newToken   = $hbMsg->getToken();
+
+    // Store session state for task_result action
+    $sessDir = __DIR__ . "/sessions";
+    if (!is_dir($sessDir)) mkdir($sessDir, 0777, true);
+    file_put_contents("{$sessDir}/{$emu_session_id}.json", json_encode([
+        "server_pubkey" => $newSrvKey ?: $serverPubKey,
+        "token"         => $newToken  ?: $sessionToken,
+        "updated"       => time(),
+        "region"        => $hb_region,
+    ]));
+
+    // Scan decrypted bytes for CDN module URLs
+    $tasks = [];
+    $cur = "";
+    $raw = $hbDecrypted;
+    for ($i = 0; $i < strlen($raw); $i++) {
+        $c = ord($raw[$i]);
+        if ($c >= 32 && $c <= 126) {
+            $cur .= $raw[$i];
+        } else {
+            if (strlen($cur) >= 20) {
+                if (preg_match('#/v1/cdn/mod/(\d+)\?verify=([^\s&"\']+)#i', $cur, $m)) {
+                    $modId  = $m[1];
+                    $verify = $m[2];
+                    $tasks[] = [
+                        "id"        => "task-" . substr(md5($modId . microtime()), 0, 8),
+                        "module_id" => $modId,
+                        "cdn_path"  => "/vanguard/v1/cdn/mod/{$modId}?verify={$verify}",
+                        "verify"    => $verify,
+                        "host"      => $hb_region,
+                    ];
+                    error_log("[GW] [HB] found task mod={$modId}");
+                }
+            }
+            $cur = "";
+        }
+    }
+
+    die(json_encode(["success" => true, "tasks" => $tasks, "task_count" => count($tasks)]));
+
+} elseif ($action === "task_result") {
+    // Encrypt mc result as type-9 wire and POST to Riot Gateway
+    // Input: mc_json, session_id, task_id
+    $mc_json_raw = isset($input["mc_json"])    && is_string($input["mc_json"])    ? $input["mc_json"]    : null;
+    $tr_session  = isset($input["session_id"]) && is_string($input["session_id"]) ? $input["session_id"] : null;
+    $tr_task_id  = isset($input["task_id"])    && is_string($input["task_id"])    ? $input["task_id"]    : "";
+
+    if (!$mc_json_raw || !$tr_session) fail(400, "missing mc_json or session_id");
+
+    $sessFile = __DIR__ . "/sessions/{$tr_session}.json";
+    if (!file_exists($sessFile)) fail(400, "unknown session_id — call hb_full first");
+
+    $sessData = json_decode(file_get_contents($sessFile), true);
+    if (!$sessData || empty($sessData["server_pubkey"])) fail(400, "no server_pubkey in session");
+
+    $srvKey    = $sessData["server_pubkey"];
+    $tr_region = $sessData["region"] ?? "eu";
+
+    // Wrap mc JSON as proto field 2 (string): 0x12 <varint_len> <data>
+    // This is the inner payload Vanguard expects inside the type-9 result wire
+    $innerProto = "\x12" . encode_varint(strlen($mc_json_raw)) . $mc_json_raw;
+
+    // Encrypt with RG+AES, type byte = 0x09
+    $taskWire = build_payload($innerProto, $srvKey, "\x09");
+
+    // POST to Riot Gateway
+    $trServer = isset($REGION_MAP[$tr_region]) ? $REGION_MAP[$tr_region] : "eu.vg.ac.pvp.net";
+    $trCh = curl_init();
+    curl_setopt_array($trCh, [
+        CURLOPT_URL            => "https://{$trServer}:8443/vanguard/v1/gateway",
+        CURLOPT_POST           => true,
+        CURLOPT_POSTFIELDS     => $taskWire,
+        CURLOPT_HTTPHEADER     => ["Content-Type: application/x-protobuf"],
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_SSL_VERIFYPEER => false,
+        CURLOPT_TIMEOUT        => 10,
+    ]);
+    $trResp = curl_exec($trCh);
+    $trCode = curl_getinfo($trCh, CURLINFO_HTTP_CODE);
+    curl_close($trCh);
+
+    error_log("[GW] [TASK] result posted task={$tr_task_id} http={$trCode} resp=" . strlen($trResp ?: "") . "B");
+
+    if ($trResp && strlen($trResp) > 50) {
+        // Try to extract rotated server pubkey from Riot's ACK
+        try {
+            $ackDec = decrypt_resp($trResp);
+            $ackMsg = new AuthenticationResponse();
+            $ackMsg->mergeFromString($ackDec);
+            $rotKey = $ackMsg->getServerRsaPublicKey();
+            $rotTok = $ackMsg->getToken();
+            if ($rotKey) {
+                $sessData["server_pubkey"] = $rotKey;
+                if ($rotTok) $sessData["token"] = $rotTok;
+                file_put_contents($sessFile, json_encode($sessData));
+                error_log("[GW] [TASK] pubkey rotated for {$tr_session}");
+            }
+        } catch (\Exception $e) {
+            // Non-fatal
+        }
+    }
+
+    die(json_encode([
+        "success"    => ($trCode === 200 || $trCode === 0),
+        "http_code"  => $trCode,
+        "resp_bytes" => strlen($trResp ?: ""),
+        "task_id"    => $tr_task_id,
+    ]));
 
 } else {
     fail(400, "unknown action");
