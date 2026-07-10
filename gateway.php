@@ -284,16 +284,20 @@ if ($action === "auth") {
     die(json_encode(["success" => true, "data" => base64_encode($vgResponse), "region" => $respondedRegion]));
 
 } elseif ($action === "refresh") {
-    $gametoken = isset($input["token"]) && is_string($input["token"]) ? $input["token"] : null;
+    $gametoken = isset($input["token"]) && is_string($input["token"]) ? $input["token"] : 
+                 (isset($input["gametoken"]) && is_string($input["gametoken"]) ? $input["gametoken"] : null);
     $sid_refresh = isset($input["sid"]) && is_string($input["sid"]) ? $input["sid"] : null;
     $game = isset($input["game"]) && is_string($input["game"]) ? $input["game"] : null;
     $region = isset($input["region"]) && is_string($input["region"]) ? strtolower(trim($input["region"])) : "eu";
 
-    if (!$gametoken || !$sid_refresh || !$game) fail(400, "missing required fields");
+    if (!$gametoken || !$sid_refresh || !$game) {
+        gw_log("REFRESH", "FAIL missing fields gametoken=" . ($gametoken ? "OK" : "null") . " sid=" . ($sid_refresh ? "OK" : "null") . " game=" . ($game ? "OK" : "null"));
+        fail(400, "missing required fields");
+    }
     if (!isset($GAME_IDS[$game])) fail(400, "unknown game type");
 
     $gameId = $GAME_IDS[$game];
-    $session_id = bin2hex(random_bytes(16));
+    $session_id = isset($input["session_id"]) && is_string($input["session_id"]) ? $input["session_id"] : bin2hex(random_bytes(16));
 
     $msg = new AuthenticationRequest();
     $msg->setMachineId("my doc whitelisted hwid 0o0o0o0o0");
