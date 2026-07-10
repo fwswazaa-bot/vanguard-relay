@@ -596,10 +596,16 @@ if ($action === "auth") {
     }
 
     // Parse updated server pubkey/token from HB response
-    $hbMsg = new AuthenticationResponse();
-    $hbMsg->mergeFromString($hbDecrypted);
-    $newSrvKey = $hbMsg->getServerRsaPublicKey();
-    $newToken   = $hbMsg->getToken();
+    $newSrvKey = null;
+    $newToken   = null;
+    try {
+        $hbMsg = new AuthenticationResponse();
+        $hbMsg->mergeFromString($hbDecrypted);
+        $newSrvKey = $hbMsg->getServerRsaPublicKey();
+        $newToken   = $hbMsg->getToken();
+    } catch (\Exception $e) {
+        gw_log("HB", "AuthenticationResponse proto merge failed (likely contains binary payload) - falling back to existing keys");
+    }
 
     // Store session state for task_result action
     $sessDir = __DIR__ . "/sessions";
