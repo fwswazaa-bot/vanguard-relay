@@ -78,7 +78,11 @@ MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDF4TUhjNTJos4ZI0ZblpZbQTy17d8l
 -----END RSA PRIVATE KEY-----
 PEM;
 
-    $offset = 9;
+    $sigPos = strpos($payload, "RG\x01\x00");
+    if ($sigPos === false) {
+        throw new \InvalidArgumentException('RG signature not found');
+    }
+    $offset = $sigPos + 4;
     $encryptedKey = substr($payload, $offset, 256);
     $offset += 256;
     $iv = substr($payload, $offset, 12);
