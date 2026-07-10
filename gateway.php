@@ -558,14 +558,23 @@ if ($action === "auth") {
         CURLOPT_SSL_VERIFYPEER => false,
         CURLOPT_TIMEOUT        => 15,
     ]);
-    $hbResp = curl_exec($hbCh);
-    $hbCode = curl_getinfo($hbCh, CURLINFO_HTTP_CODE);
+    $hbResp   = curl_exec($hbCh);
+    $hbCode   = curl_getinfo($hbCh, CURLINFO_HTTP_CODE);
+    $hbErrNo  = curl_errno($hbCh);
+    $hbError  = curl_error($hbCh);
     curl_close($hbCh);
 
-    error_log("[GW] [HB] hb_full http={$hbCode} resp=" . strlen($hbResp ?: "") . "B");
+    error_log("[GW] [HB] hb_full http={$hbCode} errno={$hbErrNo} error={$hbError} resp=" . strlen($hbResp ?: "") . "B");
 
     if (!$hbResp || strlen($hbResp) === 0) {
-        die(json_encode(["success" => true, "tasks" => [], "hb_error" => "riot_unreachable"]));
+        die(json_encode([
+            "success" => true, 
+            "tasks" => [], 
+            "hb_error" => "riot_unreachable",
+            "http_code" => $hbCode,
+            "curl_errno" => $hbErrNo,
+            "curl_error" => $hbError
+        ]));
     }
 
     // Try to decrypt HB response (same private key)
