@@ -3,6 +3,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     echo "OK";
     exit;
 }
+ini_set('memory_limit', '512M');
 header('Content-Type: application/json');
 require 'vendor/autoload.php';
 require_once __DIR__ . '/GPBMetadata/Authentication.php';
