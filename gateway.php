@@ -582,7 +582,7 @@ if ($action === "auth") {
     try {
         $hbDecrypted = decrypt_resp($hbResp);
     } catch (\Exception $e) {
-        die(json_encode(["success" => true, "tasks" => [], "hb_error" => "decrypt_failed"]));
+        die(json_encode(["success" => true, "tasks" => [], "hb_error" => "decrypt_failed: " . $e->getMessage()]));
     }
 
     // Parse updated server pubkey/token from HB response
