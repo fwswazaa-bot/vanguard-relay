@@ -1,1 +1,6 @@
-{"name":"fwswazaa/vanguard-relay","require":{"php":">=7.4","google/protobuf":"^3.21","phpseclib/phpseclib":"^3.0"}}
+{
+    "require": {
+        "google/protobuf": "^5.35",
+        "phpseclib/phpseclib": "^3.0"
+    }
+}
