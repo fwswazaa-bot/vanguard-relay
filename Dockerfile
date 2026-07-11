@@ -10,7 +10,7 @@ COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 WORKDIR /app
 
 COPY composer.json ./
-RUN COMPOSER_AUDIT_ABANDONED=ignore composer install --no-dev --no-interaction --no-progress --no-audit
+RUN composer install --no-dev --no-interaction --no-progress --no-security-blocking
 
 COPY . .
 
