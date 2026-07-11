@@ -1,9 +1,0 @@
-/vendor/
-/sessions/
-/x64/
-/vgc_emulator/
-*.exe
-*.ilk
-*.pdb
-*.obj
-*.log

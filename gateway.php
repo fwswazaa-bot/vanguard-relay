@@ -1,4 +1,5 @@
 <?php
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') { echo "OK"; exit; }
 header('Content-Type: application/json');
 require 'vendor/autoload.php';
 require_once __DIR__ . '/GPBMetadata/Authentication.php';
@@ -22,22 +23,24 @@ $GAME_IDS = [
     "league" => "com.riotgames.league",
 ];
 
-// Session storage directory
+$REGION_MAP = [
+    'na'    => 'na.vg.ac.pvp.net',
+    'eu'    => 'eu.vg.ac.pvp.net',
+    'ap'    => 'ap.vg.ac.pvp.net',
+    'kr'    => 'kr.vg.ac.pvp.net',
+    'latam' => 'latam.vg.ac.pvp.net',
+    'br'    => 'br.vg.ac.pvp.net',
+];
+
 $SESSIONS_DIR = __DIR__ . '/sessions';
 if (!is_dir($SESSIONS_DIR)) mkdir($SESSIONS_DIR, 0777, true);
-
-// GC old sessions (older than 30 min)
 foreach (glob($SESSIONS_DIR . '/*.json') as $f) {
-    if (time() - filemtime($f) > 1800) unlink($f);
+    if (time() - filemtime($f) > 600) unlink($f);
 }
 
 function encode_varint(int $n): string {
     $out = '';
-    while (true) {
-        $b = $n & 0x7F; $n >>= 7;
-        $out .= $n ? chr($b | 0x80) : chr($b);
-        if (!$n) break;
-    }
+    while (true) { $b = $n & 0x7F; $n >>= 7; $out .= $n ? chr($b | 0x80) : chr($b); if (!$n) break; }
     return $out;
 }
 
@@ -47,160 +50,180 @@ function fail(int $code, string $message): never {
 }
 
 function decrypt_resp(string $payload): string {
-    $minLength = 9 + 256 + 12 + 16;
-    if (strlen($payload) < $minLength) throw new \InvalidArgumentException('payload too short');
-
     static $privKey = null;
     if (!$privKey) {
-        $pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIEpQIBAAKCAQEAutPehyLkACaJKLPX1kbohorWz1R10qF7r/cSagCvGQYRtPHl\na4JDkSj2YKVdrpMR/Tl83uK1F44DlX9j8TTo32duE2fDu+8mkr4Ewq+F0LP5j4JX\nNg6PbhBq4zpeiZthkZk+o3IlPDasJUj8KlvbUArc+dDiNlR1gMAjrlV4B6ezFqNM\nFrMfiJh0+dohxGVKIwa2PP3Z+0x5cSB3QboMLCg+zM0yko7HGqNEgWbD5cOeidCP\nO+QJAa3Qfb6/Dr707cLfUb6Vdz6LJdEUTWpqgm8v41ZKtPhaTnhwwK5QWitDQVSX\nwerBM1PstvlvdKWBox3lw9oUvWIE0jwcNsRdXQIDAQABAoIBAAkCHkC11fiL4yEr\nSsTyNlQGbcUhdWzqjGQ3rZOe5NJ4EHKBF2bPqSJer0KJtrKsNLnZA8Rbeg/gsRuM\nQO1od7IN8qjM4As3xMxejSw1+mXNx8K7rijVGuVbtUuvjM9lxpaWpQaMgm8c08AY\nfNAuDa0WWQFSqRWljOTgXtgRFvCHeEGfuQ8SERHkyUA/7aXA2Tmrr2ozqd4gSUSK\nRVOlpDj188Z9sINkEulRfVIAgQnFlrrmWzRuCm/5lJh4b4+CEOlY7EXQU2jPbzm4\nQk56jad9y6S4k+8H5TaxsM+NAFtXZD+MM5hV/u5Jx9BnvRQuU7+LLy31vdTuVAPA\nn4/WSwECgYEA9+chc4i/w96zVVpxYMUIKD0/05wxoc6/HpTTu/i1RoQgh/mEGHVa\n8eBhzRvo9BmM3n/eHg/k5qF7+8ez1pzFUM3aRiVcoptrcLc190es4MxCdic3FA1s\nPQGLR+Ndm5Vnjpbap6wBAo4nyfokK6jLUyJiW39pZDYlavsrhT1291UCgYEAwO4M\n+GjBcWDVUHhtdgFuENfE2l+8+8Fw4zgLH0Lx/NuzubS0xHooTfxUXyJD4miEe0zw\nANMbGCq5j9ih6b73qa5Xnc/6zS1BRw66i01JMWd5mHpSXEarhw4mO48SfvLMz/jc\nMdMHneSg8pnfMK8PVOnPvBQVAAc5SKisg35WPekCgYEA1IQpoxeZ/VnOtt7/zwtZ\nwNUxAEEoMyQ/pwHCuaOuEzN1h9uZKDaCrlPCw8inXYsBvkQzr+XEPwo0dVVvkA15\nAZpXAkdJMIS4CDqnYsLpKxUv7IYVq3UOUwYd1pTNTHE6A3zDGXZUr1IaPgXYOC1N\nkIkrdHC3cpcQYLPNTT2x3LkCgYEAof8AqxCi5UWOt9v25XA78C6M32QmNipuVIv5\nYs1+jXgZCCTA6H0+HIV0ftExuQlTvIiUucyI4pj1aOBYzAGKyVJXxW4eRGvsdPLc\nFh3WCIK/KhYD0/GPE38BAV+YAzpyWWq30apFqgGQV0R2kNVdhUoyINWn8HcgVW80\nM9FALwkCgYEA9F47ghAgK8doX4/phq4jqGQF+6ROE+eV/pSAi52LP19iCtLYES8P\nz5LhSuqXxYnwQyGNSBwtKAk02xTaw2VOEfXfP/aOp/xoyMNZEGgHsK78lsqHNAF0\nLDNRI/0aFGoWKz18fUbUlG7oGICsUdxwos2QgsUgyNrAPZ1z4mB5bm4=\n-----END RSA PRIVATE KEY-----";
+        $pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDF4TUhjNTJos4ZI0ZblpZbQTy17d8l8F/wFiKZqmb8fr1g0GXb1kJJ/Se3LLo8ypdwRcaKbk18OMnoJZr3Lr4EbX8qk1ZgF7eovDe75l2Dgt2SRUA1aJI8Bxoj8wilWydWO97vHO4eTVkCWKXeFoDavYLSYEgdfgQgmjM2haT0zg7OxEdY2YqHiJyMdMmgT7m1f8PVE2AKY+cpUZL7jRxfpxdapfQjW/x4hXaTq4f17pS3xpJVB5XTW6lrYqrVZiOwPobD1IzcL3zS0/Vxe+qOY4o6q/XYPOjyfAFWvwxu4Lzpcge1P0204UHiiAXb7nke0Iv49QZ1/RL90YztzvjpAgMBAAECggEASrHErwnspsJkXtvQarEwx3icNKZ6heUzKbsJS40lu+kRjnKMCIxb0HcVn1DsahclTBWiqM2TRTFgkddkJCtKQfydNJKSV8qMIs8NkMmYAhULk3O9lYuIK82YgfpzCIwckLIf6I24msqirz6MOgWvlSJVOBltD2jqoO3kKBARoPBfUlQz5d3CqN5PM0ArpIUAy+3BosrEdpMv5/p5XZ4LG7/8XifQhdT2AN34pCTzG1Wsv7fVh2wOLWjBLe9pAg1ydM721agOIqgmv8vEP8GSrp06mqxlFxXWxMWfNjL7g8V0AbE39Fj/mwlBxXU0mkgNyzAfGXkRAHbdPT6B7A4nkwKBgQDXMyRyog3u+YckHdo+qvPK4VgvdIMaTeyJ3upF72ly/W/uboXhxznMb1N2WmfYCy7KclUEfIRwfBqbM4SAKCnL6ratzd6TbR7Jg4dqdZHhki0pnHWvcak3YE+cET5gOW5HwKUeiXHbuSkAvvKGDpFGXYb2nd9Bq6s9Rwy+E/ThHwKBgQDrZWzXwCNe7Z5f/SbtnIc+Ak6mEntdxtwJmPakKcRrVSJicQ0/FV9Xn/mCfcjLRQY60I8vCFH+8FoWRw2OnC1WewjTlrt2XbFXo/E5cI0T1Vm63GJfDjrDKW9QCz7Eh5olPQdnGnWYJbGSTEykTPN61qBbCt/ERHTIreCIzum89wKBgQC/4fYp0J2j7BK3/XZQUpY23F+JUNZlaf3zoTQ7T5Iy2hAoBZyTCNVcmBdPfKUDWlVKZk+wRGbC9aWzpWgL7cP28z4YE2zW/4FoJUNlhZeiDnj+lWfKHArKObJCco2vtwXCLOAOLne7d4o8BAazyeF3YIWq+HHNWIjDhsqx4ZGD+QKBgElSuIqj4OCq55BCzKNrBH1+Pn1geGkHjna23OzZzcMZK7K6QEQMJjynKhNJlwgqIfykBlXCI7hjqcwSqdhoMX8kp+UwqIgAO0NvX65irq8k3+RizYmKZydveqrWNeEF1DARSIMHLOYNp7hIZ/8tsRHsVNrHEliSckYoUy6KNSiVAoGAV5ZzRU0OCI06XZlW7SQk63JAcO+OZCzfiUjjQYyIf93e70GB+LdCbLvwreP/t627bIXH5955emiDXHsHlalYZ7ChFPI2edmwYUKUvxmnO042IrTBewT9vKyAz7rLG/WPnpdS6aTwkUBnupzrLSi6Qx6o3OFmLA/lXEe87Kh+H+A=\n-----END RSA PRIVATE KEY-----";
         $privKey = RSA::loadPrivateKey($pem)->withPadding(RSA::ENCRYPTION_OAEP)->withHash('sha512')->withMGFHash('sha512');
     }
-
-    $offset = 9;
-    $encryptedKey = substr($payload, $offset, 256); $offset += 256;
-    $iv = substr($payload, $offset, 12); $offset += 12;
-    $tag = substr($payload, -16);
-    $ciphertext = substr($payload, $offset, strlen($payload) - $offset - 16);
-
-    $aesKey = $privKey->decrypt($encryptedKey);
-    if ($aesKey === false || strlen($aesKey) !== 32) throw new \RuntimeException('not inso generated session');
-
-    $plaintext = openssl_decrypt($ciphertext, 'aes-256-gcm', $aesKey, OPENSSL_RAW_DATA, $iv, $tag);
-    if ($plaintext === false) throw new \RuntimeException('failed to decrypt');
-    return $plaintext;
+    $minLen = 9+256+12+16; if (strlen($payload) < $minLen) throw new \InvalidArgumentException('payload too short');
+    $off = 9; $encKey = substr($payload, $off, 256); $off+=256; $iv = substr($payload, $off, 12); $off+=12;
+    $tag = substr($payload, -16); $ct = substr($payload, $off, strlen($payload)-$off-16);
+    $aesKey = $privKey->decrypt($encKey);
+    if ($aesKey===false||strlen($aesKey)!==32) throw new \RuntimeException('not inso');
+    $pt = openssl_decrypt($ct, 'aes-256-gcm', $aesKey, OPENSSL_RAW_DATA, $iv, $tag);
+    if ($pt===false) throw new \RuntimeException('decrypt failed');
+    return $pt;
 }
 
 function build_payload(string $data, string $pubkey, string $type): string {
-    $key = random_bytes(32);
-    $iv = random_bytes(12);
-    $tag = '';
-    $ciphertext = openssl_encrypt($data, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag, '', 16);
+    $key = random_bytes(32); $iv = random_bytes(12); $tag = '';
+    $ct = openssl_encrypt($data, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag, '', 16);
     $rsa = RSA::loadPublicKey($pubkey)->withPadding(RSA::ENCRYPTION_OAEP)->withHash('sha512')->withMGFHash('sha512');
-    $rsaEncKey = $rsa->encrypt($key);
-    $rito_payload = hex2bin("52470100") . $rsaEncKey . $iv . $ciphertext . $tag;
-    $outerWrapper = "\x08" . $type . "\x12" . encode_varint(strlen($rito_payload));
-    return $outerWrapper . $rito_payload;
+    $encKey = $rsa->encrypt($key);
+    $rp = hex2bin("52470100").$encKey.$iv.$ct.$tag;
+    return "\x08".$type."\x12".encode_varint(strlen($rp)).$rp;
+}
+
+function forward_to_riot(string $payload, ?string $region): string {
+    global $REGION_MAP;
+    $servers = ($region && isset($REGION_MAP[$region])) ? [$REGION_MAP[$region]] : array_values($REGION_MAP);
+    foreach ($servers as $server) {
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL            => "https://{$server}:8443/vanguard/v1/gateway",
+            CURLOPT_POST           => true, CURLOPT_POSTFIELDS => $payload,
+            CURLOPT_HTTPHEADER     => ['Content-Type: application/x-protobuf'],
+            CURLOPT_RETURNTRANSFER => true, CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_TIMEOUT        => 10,
+        ]);
+        $resp = curl_exec($ch); curl_close($ch);
+        if ($resp !== false && strlen($resp) > 0) return $resp;
+    }
+    return null;
 }
 
 function build_auth_payload(string $gameToken, string $sid, string $gameId): string {
     $msg = new AuthenticationRequest();
     $msg->setMachineId("my doc whitelisted hwid 0o0o0o0o0");
-
-    $f2 = new Sub2();
-    $f2->setA(1); $f2->setB(2); $f2->setVersion("10.0.19045");
-    $msg->setField2($f2);
+    $f2 = new Sub2(); $f2->setA(1); $f2->setB(2); $f2->setVersion("10.0.19045"); $msg->setField2($f2);
     $msg->setGameToken($gameToken);
     if ($sid) $msg->setExternalSid($sid);
-
-    $msg->setClientRsaPublicKey("MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAutPehyLkACaJKLPX1kbohorWz1R10qF7r/cSagCvGQYRtPHla4JDkSj2YKVdrpMR/Tl83uK1F44DlX9j8TTo32duE2fDu+8mkr4Ewq+F0LP5j4JXNg6PbhBq4zpeiZthkZk+o3IlPDasJUj8KlvbUArc+dDiNlR1gMAjrlV4B6ezFqNMFrMfiJh0+dohxGVKIwa2PP3Z+0x5cSB3QboMLCg+zM0yko7HGqNEgWbD5cOeidCPO+QJAa3Qfb6/Dr707cLfUb6Vdz6LJdEUTWpqgm8v41ZKtPhaTnhwwK5QWitDQVSXwerBM1PstvlvdKWBox3lw9oUvWIE0jwcNsRdXQIDAQAB");
-    $msg->setGameId($gameId);
-    $msg->setBootState(3);
-
-    $vg_ver = new vg_version();
-    $vg_ver->setA(1); $vg_ver->setB(18); $vg_ver->setC(3); $vg_ver->setD(77);
-    $msg->setVersion1($vg_ver);
-    $msg->setVersion2($vg_ver);
-
+    $msg->setClientRsaPublicKey("MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxeE1IYzUyaLOGSNGW5aWW0E8te3f\nJfBf8BYimapm/H69YNBl29ZCSf0ntyy6PMqXcEXGim5NfDjJ6CWa9y6+BG1/KpNWYBe3qLw3\nu+Zdg4LdkkVANWiSPAcaI/MIpVsnVjve7xzuHk1ZAlil3haA2r2C0mBIHX4EIJozNoWk9M4O\nzsRHWNmKh4icjHTJoE+5tX/D1RNgCmPnKVGS+40cX6cXWqX0I1v8eIV2k6uH9e6Ut8aSVQeV\n01upa2Kq1WYjsD6Gw9SM3C980tP1cXvqjmOKOqv12Dzo8nwBVr8MbuC86XIHtT9NtOFB4ogF\n2+55HtCL+PUGdf0S/dGM7c746QIDAQAB\n");
+    $msg->setGameId($gameId); $msg->setBootState(3);
+    $vg = new vg_version(); $vg->setA(1); $vg->setB(18); $vg->setC(3); $vg->setD(88);
+    $msg->setVersion1($vg); $msg->setVersion2($vg);
     $pubKey = "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAz7Vh5LOgV9FxsyeXlvP6O\nIfD0BFDv65A4wG6pgKO5EbJ6zSxsnU/fkFJeSjE8hJxX2CeEV9XODahl2ofF/jfTv\n2GhQIJt7ePFT6s4M6ZmDiU/FC5nlJREA3FmQy7VYzPhCy0tLJOaFtZSgi3Scx2az5\nAJEPP/XKyphY0hF1UFw8dUgVa/NQvXZtgTtnt+8WRcBwDcryKsQIepK4u6xBLYdhR\n+U6zuQ3KcudI3/Ov4glRYem/XjtGBpGlPLdxbT60tPthcBcWDPWbza9FdrrhhRzNR\n3bFxreqQW2j1o+SW55+WoDJ5ZhLsdcoUkJL7Ecex+vrzJD3eI8fiEz2TaWOJwIDAQAB\n-----END PUBLIC KEY-----\n";
     return build_payload($msg->serializeToString(), $pubKey, "\x03");
 }
 
-// ── Main ──
-$input = json_decode(file_get_contents("php://input"), true);
-if (!is_array($input)) fail(400, "invalid input -- check docs for info");
+// ── Full auth cycle (talking to Riot directly) ──
+function do_full_auth_cycle(string $gameToken, string $sid, string $gameId, string $region): ?string {
+    // Step 1: Build auth payload and send to Riot
+    $authPayload = build_auth_payload($gameToken, $sid, $gameId);
+    $vgResp = forward_to_riot($authPayload, $region);
+    if (!$vgResp) return null;
 
-$action = $input["action"] ?? "auth";
-$requested_game = $input["game"] ?? null;
-$sid = $input["sid"] ?? null;
-$gameToken = $input["gametoken"] ?? null;
-$response_b64 = $input["response"] ?? null;
-$token = $input["token"] ?? null;
-$region = $input["region"] ?? "eu";
-$session_id = $input["session_id"] ?? null;
-
-if ($action === "auth") {
-    if (!$gameToken || !$requested_game) fail(400, "invalid input");
-    if ($requested_game === "valo" && !$sid) fail(400, "invalid input");
-    if (!isset($GAME_IDS[$requested_game])) fail(400, "unknown game type");
-
-    $finalPayload = build_auth_payload($gameToken, (string)$sid, $GAME_IDS[$requested_game]);
-    die(json_encode(["success" => true, "data" => base64_encode($finalPayload)]));
-
-} elseif ($action === "access" || $action === "heartbeat") {
-    if (!$response_b64) fail(400, "invalid input");
-
-    $responseBytes = base64_decode($response_b64, true);
-    if ($responseBytes === false || strlen($responseBytes) === 0) fail(400, "invalid response encoding");
-
-    try { $decrypted = decrypt_resp($responseBytes); }
-    catch (\Exception $e) { fail(400, "not inso generated session"); }
+    // Step 2: Decrypt response, extract server public key + token
+    try { $decrypted = decrypt_resp($vgResp); }
+    catch (\Exception $e) { return null; }
 
     $msg = new AuthenticationResponse();
     $msg->mergeFromString($decrypted);
+    $serverPubKey = $msg->getServerRsaPublicKey();
+    if (!$serverPubKey) return null;
 
-    $serverPublicKey = $msg->getServerRsaPublicKey();
-    if (!$serverPublicKey) fail(400, "broken resp / api needs update");
+    // Step 3: Build AccessRequest and send to Riot
+    $access = new AccessRequest(); $access->setToken($msg->getToken());
+    $accessPayload = build_payload($access->serializeToString(), $serverPubKey, "\x04");
+    $vgResp2 = forward_to_riot($accessPayload, $region);
+    if (!$vgResp2) return null;
 
-    $access = new AccessRequest();
-    $access->setToken($msg->getToken());
+    // Step 4: Build heartbeat and send
+    $heartbeatPayload = build_payload($access->serializeToString(), $serverPubKey, "\x07");
+    forward_to_riot($heartbeatPayload, $region); // best-effort
+
+    // Return the final access payload (ticket to inject into pipe)
+    return $accessPayload;
+}
+
+// ── Main ──
+$input = json_decode(file_get_contents("php://input"), true);
+if (!is_array($input)) fail(400, "invalid input");
+
+$action = $input["action"] ?? "auth";
+$game   = $input["game"] ?? null;
+$sid    = $input["sid"] ?? null;
+$gameToken = $input["gametoken"] ?? null;
+$response_b64 = $input["response"] ?? null;
+$region = strtolower(trim($input["region"] ?? "eu"));
+$token = $input["token"] ?? null;
+$session_id = $input["session_id"] ?? null;
+
+if ($action === "auth") {
+    if (!$gameToken || !$game) fail(400, "invalid input");
+    if ($game === "valo" && !$sid) fail(400, "invalid input");
+    if (!isset($GAME_IDS[$game])) fail(400, "unknown game");
+    $payload = build_auth_payload($gameToken, (string)$sid, $GAME_IDS[$game]);
+    die(json_encode(["success" => true, "data" => base64_encode($payload)]));
+
+} elseif ($action === "access" || $action === "heartbeat") {
+    if (!$response_b64) fail(400, "invalid input");
+    $raw = base64_decode($response_b64, true);
+    if ($raw === false || strlen($raw) === 0) fail(400, "invalid encoding");
+    try { $dec = decrypt_resp($raw); } catch (\Exception $e) { fail(400, "not inso"); }
+    $msg = new AuthenticationResponse(); $msg->mergeFromString($dec);
+    $spk = $msg->getServerRsaPublicKey();
+    if (!$spk) fail(400, "broken resp");
+    $acc = new AccessRequest(); $acc->setToken($msg->getToken());
     $type = $action === "access" ? "\x04" : "\x07";
-    $finalPayload = build_payload($access->serializeToString(), $serverPublicKey, $type);
+    $payload = build_payload($acc->serializeToString(), $spk, $type);
+    die(json_encode(["success" => true, "data" => base64_encode($payload)]));
 
-    die(json_encode(["success" => true, "data" => base64_encode($finalPayload)]));
+} elseif ($action === "forward") {
+    if (!$response_b64) fail(400, "invalid input");
+    $raw = base64_decode($response_b64, true);
+    if ($raw === false || strlen($raw) === 0) fail(400, "invalid encoding");
+    $resp = forward_to_riot($raw, $region);
+    if ($resp === null) fail(502, "all Vanguard servers failed");
+    die(json_encode(["success" => true, "data" => base64_encode($resp)]));
 
 } elseif ($action === "refresh") {
-    // Store session data for no-restart flow
-    if (!$token || !$sid || !$requested_game) fail(400, "refresh requires token, sid, and game");
-    if (!isset($GAME_IDS[$requested_game])) fail(400, "unknown game type");
+    // No-restart: kick off a full auth cycle server-side
+    if (!$token || !$sid || !$game) fail(400, "refresh requires token, sid, game");
+    if (!isset($GAME_IDS[$game])) fail(400, "unknown game");
 
     $sessId = $session_id ?: bin2hex(random_bytes(16));
     $sessFile = $SESSIONS_DIR . '/' . $sessId . '.json';
 
-    $gameId = $GAME_IDS[$requested_game];
-    $authPayload = build_auth_payload($token, $sid, $gameId);
-
     $data = [
         'session_id' => $sessId,
-        'game'       => $requested_game,
+        'game'       => $game,
         'token'      => $token,
         'sid'        => $sid,
-        'game_id'    => $gameId,
         'region'     => $region,
-        'status'     => 'ready',
-        'ticket'     => base64_encode($authPayload),
+        'status'     => 'processing',
         'created_at' => time(),
     ];
     file_put_contents($sessFile, json_encode($data), LOCK_EX);
 
-    die(json_encode(["success" => true, "session_id" => $sessId]));
+    // Do the full auth cycle synchronously (since we can talk to Riot directly)
+    $gameId = $GAME_IDS[$game];
+    $ticket = do_full_auth_cycle($token, $sid, $gameId, $region);
+
+    if ($ticket) {
+        $data['status'] = 'ready';
+        $data['ticket'] = base64_encode($ticket);
+    } else {
+        $data['status'] = 'failed';
+        $data['error'] = 'Auth cycle failed';
+    }
+    $data['completed_at'] = time();
+    file_put_contents($sessFile, json_encode($data), LOCK_EX);
+
+    die(json_encode(["success" => $ticket ? true : false, "session_id" => $sessId]));
 
 } elseif ($action === "poll") {
     if (!$session_id) fail(400, "session_id required");
-
     $sessFile = $SESSIONS_DIR . '/' . $session_id . '.json';
     if (!file_exists($sessFile)) fail(404, "session not found");
-
     $data = json_decode(file_get_contents($sessFile), true);
-    if (!$data) fail(500, "corrupt session");
-
-    // Auto-cleanup old sessions
-    if (time() - ($data['created_at'] ?? 0) > 1800) {
-        unlink($sessFile);
-        fail(404, "session expired");
+    if (!$data || time() - ($data['created_at'] ?? 0) > 600) {
+        @unlink($sessFile); fail(404, "session expired");
     }
-
     $status = $data['status'] ?? 'pending';
     $resp = ["status" => $status, "session_id" => $session_id];
-
-    if ($status === 'ready') {
-        $resp['ticket'] = $data['ticket'] ?? '';
-        // Mark as consumed so it's not reused
-        $data['status'] = 'consumed';
-        file_put_contents($sessFile, json_encode($data), LOCK_EX);
-    } elseif ($status === 'failed') {
-        $resp['error'] = $data['error'] ?? 'unknown error';
-    }
-
+    if ($status === 'ready') { $resp['ticket'] = $data['ticket'] ?? ''; $data['status'] = 'consumed'; file_put_contents($sessFile, json_encode($data), LOCK_EX); }
+    elseif ($status === 'failed') { $resp['error'] = $data['error'] ?? 'unknown'; }
     die(json_encode($resp));
 
 } else {
