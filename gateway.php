@@ -140,44 +140,31 @@ function do_full_auth_cycle(string $gameToken, string $sid, string $gameId, stri
     return $accessPayload;
 }
 
-// ── Parse heartbeat response for task IDs and generate stub results ──
+// ── Parse heartbeat response for task IDs AND CDN module URLs ──
 function parse_heartbeat_tasks(string $hbDecrypted): array {
-    $tasks = [];
-    // The heartbeat protobuf has fields: field1 (int), tasks (int), active_tasks (int)
-    // We need to parse the raw protobuf since we don't have the HB proto class
-    // Wire format: varint field=(field_num << 3 | wire_type)
-    
+    $tasks = ['ids' => [], 'cdn_urls' => []];
     $pos = 0; $len = strlen($hbDecrypted);
     while ($pos < $len) {
         $varint = 0; $shift = 0;
-        do {
-            if ($pos >= $len) break 2;
-            $b = ord($hbDecrypted[$pos++]);
-            $varint |= ($b & 0x7F) << $shift;
-            $shift += 7;
-        } while ($b & 0x80);
-        
-        $fieldNum = $varint >> 3;
-        $wireType = $varint & 0x07;
-        
+        do { if ($pos >= $len) break 2; $b = ord($hbDecrypted[$pos++]); $varint |= ($b & 0x7F) << $shift; $shift += 7; } while ($b & 0x80);
+        $fieldNum = $varint >> 3; $wireType = $varint & 0x07;
         if ($wireType == 0) { // varint
             $val = 0; $shift = 0;
-            do {
-                if ($pos >= $len) break 2;
-                $b = ord($hbDecrypted[$pos++]);
-                $val |= ($b & 0x7F) << $shift;
-                $shift += 7;
-            } while ($b & 0x80);
-            if ($fieldNum == 2 || $fieldNum == 4) $tasks[] = (int)$val;
+            do { if ($pos >= $len) break 2; $b = ord($hbDecrypted[$pos++]); $val |= ($b & 0x7F) << $shift; $shift += 7; } while ($b & 0x80);
+            if ($fieldNum == 2 || $fieldNum == 4) $tasks['ids'][] = (int)$val;
         } elseif ($wireType == 2) { // length-delimited
             $dLen = 0; $shift = 0;
-            do {
-                if ($pos >= $len) break 2;
-                $b = ord($hbDecrypted[$pos++]);
-                $dLen |= ($b & 0x7F) << $shift;
-                $shift += 7;
-            } while ($b & 0x80);
-            $pos += $dLen; // skip the data
+            do { if ($pos >= $len) break 2; $b = ord($hbDecrypted[$pos++]); $dLen |= ($b & 0x7F) << $shift; $shift += 7; } while ($b & 0x80);
+            $data = substr($hbDecrypted, $pos, min($dLen, 65536));
+            // Check for CDN URL pattern: /v1/cdn/mod/\d+(?:\?verify=...)?
+            if (preg_match('#/v\d+/cdn/mod/(\d+)(\?verify=[^\x00\x1F"\s]+)?#', $data, $m)) {
+                $tasks['cdn_urls'][] = [
+                    'module_id' => $m[1],
+                    'url'       => $m[0],
+                    'full_url'  => (strpos($m[0], 'http') === 0) ? $m[0] : 'https://' . ($GLOBALS['_last_region_host'] ?? 'ap.vg.ac.pvp.net:8443') . '/' . ltrim($m[0], '/'),
+                ];
+            }
+            $pos += $dLen;
         }
     }
     return $tasks;
@@ -280,22 +267,25 @@ if ($action === "auth") {
     // Parse tasks from heartbeat
     $tasks = parse_heartbeat_tasks($hbDecrypted);
     
-    // Send stub task results for each task found
+    // Send stub task results for each task ID found
     $results = [];
-    foreach ($tasks as $taskId) {
+    foreach ($tasks['ids'] as $taskId) {
         $ok = send_task_result('{"0":1}', $srvKey, $region);
         $results[] = ["task" => $taskId, "sent" => $ok];
     }
     
-    // If no tasks found, still send a heartbeat ping to keep alive
-    if (empty($tasks)) {
-        // Just forward the raw heartbeat data back as a keep-alive
-        // Actually, sending a dummy task result
+    // If no tasks found, still send a keep-alive
+    if (empty($tasks['ids'])) {
         send_task_result('{"0":1}', $srvKey, $region);
         $results[] = ["task" => 0, "sent" => true, "note" => "keep-alive"];
     }
     
-    die(json_encode(["success" => true, "tasks_processed" => count($tasks), "results" => $results]));
+    die(json_encode([
+        "success" => true,
+        "tasks_processed" => count($tasks['ids']),
+        "results" => $results,
+        "cdn_urls" => $tasks['cdn_urls'],
+    ]));
 
 } elseif ($action === "task_result") {
     // Direct task result submission
