@@ -108,7 +108,7 @@ if (!is_array($input)) {
 $action = isset($input["action"]) && is_string($input["action"]) ? $input["action"] : "auth";
 $requested_game = isset($input["game"]) && is_string($input["game"]) ? $input["game"] : null;
 $sid = isset($input["sid"]) && is_string($input["sid"]) ? $input["sid"] : null;
-$gameToken = isset($input["gametoken"]) && is_string($input["gametoken"]) ? $input["gametoken"] : null;
+$gameToken = isset($input["gametoken"]) && is_string($input["gametoken"]) ? $input["gametoken"] : (isset($input["response"]) && is_string($input["response"]) ? $input["response"] : null);
 $response_b64 = isset($input["response"]) && is_string($input["response"]) ? $input["response"] : null;
 $region_input = isset($input["region"]) && is_string($input["region"]) ? strtolower(trim($input["region"])) : null;
 
