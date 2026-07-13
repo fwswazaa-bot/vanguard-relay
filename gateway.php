@@ -46,14 +46,49 @@ function ricrypto_decrypt(string $payload): ?string {
     return ($pt === false) ? null : $pt;
 }
 
-// ── PC task fabricator ──
+// ── PC task fabricator: randomizes realistic system info per session ──
 function get_pc_task_result(): string {
+    $cpus = [
+        'Intel(R) Core(TM) i5-10400F CPU @ 2.90GHz',
+        'Intel(R) Core(TM) i5-11400F CPU @ 2.60GHz',
+        'Intel(R) Core(TM) i5-12400F CPU @ 2.50GHz',
+        'Intel(R) Core(TM) i7-9700K CPU @ 3.60GHz',
+        'Intel(R) Core(TM) i7-10700K CPU @ 3.80GHz',
+        'Intel(R) Core(TM) i7-11700K CPU @ 3.60GHz',
+        'Intel(R) Core(TM) i7-12700K CPU @ 3.60GHz',
+        'Intel(R) Core(TM) i9-10900K CPU @ 3.70GHz',
+        'Intel(R) Core(TM) i9-12900K CPU @ 3.20GHz',
+        'AMD Ryzen 5 3600 6-Core Processor',
+        'AMD Ryzen 5 5600X 6-Core Processor',
+        'AMD Ryzen 7 3700X 8-Core Processor',
+        'AMD Ryzen 7 5800X 8-Core Processor',
+        'AMD Ryzen 9 5900X 12-Core Processor',
+    ];
+    $gpus = [
+        'NVIDIA GeForce GTX 1660 SUPER',
+        'NVIDIA GeForce GTX 1660 Ti',
+        'NVIDIA GeForce RTX 2060',
+        'NVIDIA GeForce RTX 2060 SUPER',
+        'NVIDIA GeForce RTX 2070 SUPER',
+        'NVIDIA GeForce RTX 3060',
+        'NVIDIA GeForce RTX 3060 Ti',
+        'NVIDIA GeForce RTX 3070',
+        'NVIDIA GeForce RTX 3070 Ti',
+        'NVIDIA GeForce RTX 3080',
+        'NVIDIA GeForce RTX 4060',
+        'NVIDIA GeForce RTX 4070',
+        'AMD Radeon RX 6600 XT',
+        'AMD Radeon RX 6700 XT',
+    ];
+    $rams = [8192, 16384, 16384, 16384, 32768, 32768]; // weighted toward 16GB
+    $osVersions = ['10.0.19041','10.0.19042','10.0.19043','10.0.19044','10.0.19045','10.0.22000','10.0.22621'];
+    
     return json_encode([
-        'cpu' => 'Intel(R) Core(TM) i7-9700K CPU @ 3.60GHz',
-        'ram' => 16384,
-        'os'  => '10.0.19045',
-        'gpu' => 'NVIDIA GeForce RTX 3070',
-        'tpm' => true,
+        'cpu' => $cpus[array_rand($cpus)],
+        'ram' => $rams[array_rand($rams)],
+        'os'  => $osVersions[array_rand($osVersions)],
+        'gpu' => $gpus[array_rand($gpus)],
+        'tpm' => (rand(0,1) ? true : false),
     ]);
 }
 
