@@ -409,6 +409,20 @@ if ($action === "auth") {
 
     $respExtra = [];
     $respExtra['proto_b64'] = base64_encode(json_encode(dump_proto_fields($decrypted)));
+    // Also dump proto fields of field 1's inner data (AuthenticationResponse)
+    $innerProto = '';
+    $pfields = dump_proto_fields($decrypted);
+    if (!empty($pfields) && $pfields[0]['field'] == 1 && $pfields[0]['type'] == 'bytes') {
+        // field 1 is a bytes blob - parse its proto structure
+        $pos = 0; $dlen = strlen($decrypted);
+        // skip field 1's tag and varint length
+        $v = 0; $s = 0;
+        do { if ($pos >= $dlen) break; $b = ord($decrypted[$pos++]); $v |= ($b & 0x7F) << $s; $s += 7; } while ($b & 0x80);
+        $innerLen = $pfields[0]['len'];
+        $innerData = substr($decrypted, $pos, min($innerLen, 131072));
+        $innerProto = base64_encode(json_encode(dump_proto_fields($innerData)));
+    }
+    $respExtra['inner_proto_b64'] = $innerProto ?: '';
     $respExtra['decrypted_len'] = strlen($decrypted);
     if (!empty($tasks['ids'])) {
         $respExtra['tasks_processed'] = count($tasks['ids']);
