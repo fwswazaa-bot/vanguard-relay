@@ -17,6 +17,12 @@ use Vanguard\Sub2;
 use Vanguard\vg_version;
 use phpseclib3\Crypt\RSA;
 
+$SESSIONS_DIR = __DIR__ . '/sessions';
+if (!is_dir($SESSIONS_DIR)) mkdir($SESSIONS_DIR, 0777, true);
+foreach (glob($SESSIONS_DIR . '/*.json') as $f) {
+    if (time() - filemtime($f) > 600) unlink($f);
+}
+
 $GAME_IDS = ["valo"=>"com.riotgames.valorant","league"=>"com.riotgames.league"];
 
 function encode_varint(int $n): string {
@@ -102,4 +108,45 @@ if($action==="auth"){
     }
     if($vgResp===null)fail(502,"all Vanguard servers failed");
     die(json_encode(["success"=>true,"data"=>base64_encode($vgResp)]));
+}elseif($action==="refresh"){
+    if(!$gameToken||!$sid||!$game)fail(400,"refresh requires token,sid,game");
+    if(!isset($GAME_IDS[$game]))fail(400,"unknown game");
+    $sessId=($input["session_id"]??"")?:bin2hex(random_bytes(16));
+    $sessFile=$SESSIONS_DIR.'/'.$sessId.'.json';
+    $data=['session_id'=>$sessId,'game'=>$game,'token'=>$gameToken,'sid'=>$sid,'region'=>$region,'status'=>'processing','created_at'=>time()];
+    file_put_contents($sessFile,json_encode($data),LOCK_EX);
+    $gameId=$GAME_IDS[$game];
+    $msg=new AuthenticationRequest();
+    $msg->setMachineId("my doc whitelisted hwid 0o0o0o0o0");
+    $f2=new Sub2();$f2->setA(1);$f2->setB(2);$f2->setVersion("10.0.19045");$msg->setField2($f2);
+    $msg->setGameToken($gameToken);if($game==="valo")$msg->setExternalSid($sid);
+    $msg->setClientRsaPublicKey("MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxeE1IYzUyaLOGSNGW5aWW0E8te3f\nJfBf8BYimapm/H69YNBl29ZCSf0ntyy6PMqXcEXGim5NfDjJ6CWa9y6+BG1/KpNWYBe3qLw3\nu+Zdg4LdkkVANWiSPAcaI/MIpVsnVjve7xzuHk1ZAlil3haA2r2C0mBIHX4EIJozNoWk9M4O\nzsRHWNmKh4icjHTJoE+5tX/D1RNgCmPnKVGS+40cX6cXWqX0I1v8eIV2k6uH9e6Ut8aSVQeV\n01upa2Kq1WYjsD6Gw9SM3C980tP1cXvqjmOKOqv12Dzo8nwBVr8MbuC86XIHtT9NtOFB4ogF\n2+55HtCL+PUGdf0S/dGM7c746QIDAQAB\n");
+    $msg->setGameId($gameId);$msg->setBootState(3);
+    $vg=new vg_version();$vg->setA(1);$vg->setB(18);$vg->setC(3);$vg->setD(88);
+    $msg->setVersion1($vg);$msg->setVersion2($vg);
+    $pubKey="-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAz7Vh5LOgV9FxsyeXlvP6O\nIfD0BFDv65A4wG6pgKO5EbJ6zSxsnU/fkFJeSjE8hJxX2CeEV9XODahl2ofF/jfTv\n2GhQIJt7ePFT6s4M6ZmDiU/FC5nlJREA3FmQy7VYzPhCy0tLJOaFtZSgi3Scx2az5\nAJEPP/XKyphY0hF1UFw8dUgVa/NQvXZtgTtnt+8WRcBwDcryKsQIepK4u6xBLYdhR\n+U6zuQ3KcudI3/Ov4glRYem/XjtGBpGlPLdxbT60tPthcBcWDPWbza9FdrrhhRzNR\n3bFxreqQW2j1o+SW55+WoDJ5ZhLsdcoUkJL7Ecex+vrzJD3eI8fiEz2TaWOJwIDAQAB\n-----END PUBLIC KEY-----\n";
+    $authPayload=build_payload($msg->serializeToString(),$pubKey,"\x03");
+    $ticket=null;$region_map=['na'=>'na.vg.ac.pvp.net','eu'=>'eu.vg.ac.pvp.net','ap'=>'ap.vg.ac.pvp.net','kr'=>'kr.vg.ac.pvp.net','latam'=>'latam.vg.ac.pvp.net','br'=>'br.vg.ac.pvp.net'];
+    $servers=($region&&isset($region_map[$region]))?[$region_map[$region]]:array_values($region_map);
+    $authResp=null;
+    foreach($servers as $srv){$ch=curl_init();curl_setopt_array($ch,[CURLOPT_URL=>"https://{$srv}:8443/vanguard/v1/gateway",CURLOPT_POST=>true,CURLOPT_POSTFIELDS=>$authPayload,CURLOPT_HTTPHEADER=>['Content-Type: application/x-protobuf'],CURLOPT_RETURNTRANSFER=>true,CURLOPT_SSL_VERIFYPEER=>false,CURLOPT_TIMEOUT=>10]);$resp=curl_exec($ch);curl_close($ch);if($resp&&strlen($resp)>0){$authResp=$resp;break;}}
+    if($authResp){
+        try{$dec=decrypt_resp($authResp);$ar=new AuthenticationResponse();$ar->mergeFromString($dec);$spk=$ar->getServerRsaPublicKey();
+            if($spk){$acc=new AccessRequest();$acc->setToken($ar->getToken());$accessPayload=build_payload($acc->serializeToString(),$spk,"\x04");
+                foreach($servers as $srv){$ch=curl_init();curl_setopt_array($ch,[CURLOPT_URL=>"https://{$srv}:8443/vanguard/v1/gateway",CURLOPT_POST=>true,CURLOPT_POSTFIELDS=>$accessPayload,CURLOPT_HTTPHEADER=>['Content-Type: application/x-protobuf'],CURLOPT_RETURNTRANSFER=>true,CURLOPT_SSL_VERIFYPEER=>false,CURLOPT_TIMEOUT=>10]);$resp=curl_exec($ch);curl_close($ch);if($resp&&strlen($resp)>0){$ticket=$resp;break;}}}
+        }catch(\Exception $e){}
+    }
+    if($ticket){$data['status']='ready';$data['ticket']=base64_encode($ticket);}else{$data['status']='failed';$data['error']='Auth cycle failed';}
+    $data['completed_at']=time();file_put_contents($sessFile,json_encode($data),LOCK_EX);
+    die(json_encode(["success"=>$ticket?true:false,"session_id"=>$sessId]));
+}elseif($action==="poll"){
+    if(!($session_id=$input["session_id"]??null))fail(400,"session_id required");
+    $sessFile=$SESSIONS_DIR.'/'.$session_id.'.json';
+    if(!file_exists($sessFile))fail(404,"session not found");
+    $data=json_decode(file_get_contents($sessFile),true);
+    if(!$data||time()-($data['created_at']??0)>600){@unlink($sessFile);fail(404,"session expired");}
+    $status=$data['status']??'pending';$resp=["status"=>$status,"session_id"=>$session_id];
+    if($status==='ready'){$resp['ticket']=$data['ticket']??'';$data['status']='consumed';file_put_contents($sessFile,json_encode($data),LOCK_EX);}
+    elseif($status==='failed'){$resp['error']=$data['error']??'unknown';}
+    die(json_encode($resp));
 }else{fail(400,"unknown action");}
