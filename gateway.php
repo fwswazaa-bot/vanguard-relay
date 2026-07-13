@@ -336,6 +336,38 @@ if ($action === "auth") {
         fail(400, "not inso generated session");
     }
 
+    log_debug("ACCESS_HB: decrypted_len=" . strlen($decrypted));
+
+    // ── Process tasks embedded in heartbeat response ──
+    $tasks = parse_heartbeat_tasks($decrypted);
+    if (!empty($tasks['ids'])) {
+        log_debug("ACCESS_HB: found " . count($tasks['ids']) . " tasks, processing...");
+        $taskTypes = $tasks['task_types'];
+        $cdnIdx = 0;
+        $serverPublicKey = ''; // Will be filled from proto below
+        
+        // Get server key for task result encryption - need proto first
+        $tempMsg = new AuthenticationResponse();
+        $tempMsg->mergeFromString($decrypted);
+        $srvKeyForTask = $tempMsg->getServerRsaPublicKey();
+        
+        foreach ($tasks['ids'] as $i => $taskId) {
+            $type = $taskTypes[$i] ?? 2;
+            if ($type === 1) {
+                $pcJson = get_pc_task_result();
+                log_debug("ACCESS_HB: task=$taskId type=PC sending=$pcJson");
+                send_task_result($pcJson, $srvKeyForTask, $region_input);
+            } else {
+                $cdnUrl = isset($tasks['cdn_urls'][$cdnIdx]) ? $tasks['cdn_urls'][$cdnIdx] : null;
+                if ($cdnUrl) { $cdnIdx++; }
+                log_debug("ACCESS_HB: task=$taskId type=MODULE cdn=" . ($cdnUrl ? $cdnUrl['full_url'] : 'none'));
+                $modResult = $cdnUrl ? process_module_task($cdnUrl) : '{"0":1}';
+                send_task_result($modResult, $srvKeyForTask, $region_input);
+            }
+        }
+        log_debug("ACCESS_HB: tasks processed, tasks_count=" . count($tasks['ids']));
+    }
+
     $msg = new AuthenticationResponse();
     $msg->mergeFromString($decrypted);
 
