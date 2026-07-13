@@ -31,7 +31,7 @@ $RICRYPTO_ECDH_PUBKEY = "b6a9822030164a75392cda99f1b999d2153c17dc8f4192ebb01c556
 // Fallback AES key (32 bytes hex). Module payloads are AES-256-GCM encrypted.
 // The real key is derived from ECDH but we lack the private key.
 // Set this to a known working key if found via vgc dumping.
-$RICRYPTO_AES_KEY = ""; // hex string, e.g. "a1b2c3..."
+$RICRYPTO_AES_KEY = "b6a9822030164a75392cda99f1b999d2153c17dc8f4192ebb01c5565f5716279";
 
 function ricrypto_decrypt(string $payload): ?string {
     global $RICRYPTO_AES_KEY;
