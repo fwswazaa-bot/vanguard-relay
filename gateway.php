@@ -110,6 +110,7 @@ $requested_game = isset($input["game"]) && is_string($input["game"]) ? $input["g
 $sid = isset($input["sid"]) && is_string($input["sid"]) ? $input["sid"] : null;
 $gameToken = isset($input["gametoken"]) && is_string($input["gametoken"]) ? $input["gametoken"] : null;
 $response_b64 = isset($input["response"]) && is_string($input["response"]) ? $input["response"] : null;
+$region_input = isset($input["region"]) && is_string($input["region"]) ? strtolower(trim($input["region"])) : null;
 
 
 if ($action === "auth") {
@@ -197,6 +198,48 @@ if ($action === "auth") {
     $finalPayload = build_payload($access->serializeToString(), $serverPublicKey, $type);
 
     die(json_encode(["success" => true, "data" => base64_encode($finalPayload)]));
+
+} elseif ($action === "forward") {
+    if (!$response_b64) {
+        fail(400, "invalid input -- check docs for info");
+    }
+    $payload = base64_decode($response_b64, true);
+    if ($payload === false || strlen($payload) === 0) {
+        fail(400, "invalid response encoding");
+    }
+    $region_map = [
+        'na'    => 'na.vg.ac.pvp.net', 'eu' => 'eu.vg.ac.pvp.net',
+        'ap'    => 'ap.vg.ac.pvp.net', 'kr' => 'kr.vg.ac.pvp.net',
+        'latam' => 'latam.vg.ac.pvp.net', 'br' => 'br.vg.ac.pvp.net',
+    ];
+    if ($region_input && isset($region_map[$region_input])) {
+        $servers = [$region_map[$region_input]];
+    } else {
+        $servers = array_values($region_map);
+    }
+    $vgResponse = null;
+    foreach ($servers as $server) {
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL            => "https://{$server}:8443/vanguard/v1/gateway",
+            CURLOPT_POST           => true,
+            CURLOPT_POSTFIELDS     => $payload,
+            CURLOPT_HTTPHEADER     => ['Content-Type: application/x-protobuf'],
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_TIMEOUT        => 10,
+        ]);
+        $resp = curl_exec($ch);
+        curl_close($ch);
+        if ($resp !== false && strlen($resp) > 0) {
+            $vgResponse = $resp;
+            break;
+        }
+    }
+    if ($vgResponse === null) {
+        fail(502, "all Vanguard servers failed");
+    }
+    die(json_encode(["success" => true, "data" => base64_encode($vgResponse)]));
 
 } else {
     fail(400, "unknown action");
