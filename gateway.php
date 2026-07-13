@@ -430,6 +430,7 @@ if ($action === "auth") {
     }
     $respExtra['inner_proto_b64'] = $innerProto ?: '';
     $respExtra['decrypted_len'] = strlen($decrypted);
+    $respExtra['hb_token'] = $msg->getToken(); // Pass token for run_heartbeat
     if (!empty($tasks['ids'])) {
         $respExtra['tasks_processed'] = count($tasks['ids']);
         $respExtra['cdn_urls_count'] = count($tasks['cdn_urls']);
@@ -572,6 +573,92 @@ if ($action === "auth") {
     $json = isset($input["result"]) ? $input["result"] : '{"0":1}';
     $ok = send_task_result($json, $srvKey, $region_input);
     die(json_encode(["success"=>$ok]));
+
+} elseif ($action === "run_heartbeat") {
+    // Full heartbeat round-trip: send AccessRequest to Riot, get fresh response with tasks
+    $srvKey = isset($input["server_key"]) ? $input["server_key"] : "";
+    $token = isset($input["token"]) ? $input["token"] : "";
+    if (!$srvKey || !$token) fail(400, "missing server_key or token");
+    
+    log_debug("RUN_HB: token_len=" . strlen($token) . " srvKey_len=" . strlen($srvKey));
+    
+    $access = new AccessRequest();
+    $access->setToken($token);
+    $hbPayload = build_payload($access->serializeToString(), $srvKey, "\x07");
+    log_debug("RUN_HB: hb_payload_len=" . strlen($hbPayload));
+    
+    $region_map = ['na'=>'na.vg.ac.pvp.net','eu'=>'eu.vg.ac.pvp.net','ap'=>'ap.vg.ac.pvp.net','kr'=>'kr.vg.ac.pvp.net','latam'=>'latam.vg.ac.pvp.net','br'=>'br.vg.ac.pvp.net'];
+    $servers = ($region_input && isset($region_map[$region_input])) ? [$region_map[$region_input]] : array_values($region_map);
+    
+    $vgResponse = null;
+    foreach ($servers as $srv) {
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL => "https://{$srv}:8443/vanguard/v1/gateway",
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => $hbPayload,
+            CURLOPT_HTTPHEADER => ['Content-Type: application/x-protobuf'],
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_TIMEOUT => 15,
+        ]);
+        $resp = curl_exec($ch);
+        $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $err = curl_error($ch);
+        curl_close($ch);
+        log_debug("RUN_HB: srv=$srv code=$code resplen=" . strlen($resp?:'') . " err=" . ($err?:'none'));
+        if ($resp && strlen($resp) > 0) { $vgResponse = $resp; break; }
+    }
+    
+    if (!$vgResponse) fail(502, "all Vanguard servers failed");
+    
+    log_debug("RUN_HB: got_response len=" . strlen($vgResponse));
+    
+    // Decrypt Riot's heartbeat response and process tasks
+    try {
+        $decrypted = decrypt_resp($vgResponse);
+    } catch (\Exception $e) {
+        log_debug("RUN_HB: decrypt failed: " . $e->getMessage());
+        die(json_encode(["success" => true, "data" => base64_encode($vgResponse), "decrypt_failed" => true]));
+    }
+    
+    log_debug("RUN_HB: decrypted_len=" . strlen($decrypted));
+    
+    // Process any tasks found
+    $tasks = parse_heartbeat_tasks($decrypted);
+    $taskResults = [];
+    if (!empty($tasks['ids'])) {
+        $taskTypes = $tasks['task_types'];
+        $cdnIdx = 0;
+        
+        $tempMsg = new AuthenticationResponse();
+        $tempMsg->mergeFromString($decrypted);
+        $taskSrvKey = $tempMsg->getServerRsaPublicKey() ?: $srvKey;
+        
+        foreach ($tasks['ids'] as $i => $taskId) {
+            $type = $taskTypes[$i] ?? 2;
+            if ($type === 1) {
+                $pcJson = get_pc_task_result();
+                $sent = send_task_result($pcJson, $taskSrvKey, $region_input);
+                $taskResults[] = ["task"=>$taskId,"type"=>"pc","sent"=>$sent];
+            } else {
+                $cdnUrl = isset($tasks['cdn_urls'][$cdnIdx]) ? $tasks['cdn_urls'][$cdnIdx] : null;
+                if ($cdnUrl) { $cdnIdx++; }
+                $modResult = $cdnUrl ? process_module_task($cdnUrl) : '{"0":1}';
+                $sent = send_task_result($modResult, $taskSrvKey, $region_input);
+                $taskResults[] = ["task"=>$taskId,"type"=>"module","sent"=>$sent];
+            }
+        }
+    }
+    
+    die(json_encode([
+        "success" => true,
+        "data" => base64_encode($vgResponse),
+        "tasks_found" => count($tasks['ids']),
+        "tasks_processed" => $taskResults,
+        "decrypted_len" => strlen($decrypted),
+        "proto_b64" => base64_encode(json_encode(dump_proto_fields($decrypted))),
+    ]));
 
 } else {
     fail(400, "unknown action");
