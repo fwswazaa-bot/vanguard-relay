@@ -113,6 +113,31 @@ function log_debug(string $msg): void {
     file_put_contents($LOG_DIR . '/gateway.log', $line, FILE_APPEND | LOCK_EX);
 }
 
+function dump_proto_fields(string $data, int $maxScan = 20): array {
+    $fields = [];
+    $pos = 0;
+    $len = min(strlen($data), $maxScan * 128);
+    while ($pos < $len) {
+        $v = 0; $s = 0;
+        do { if ($pos >= $len) break 2; $b = ord($data[$pos++]); $v |= ($b & 0x7F) << $s; $s += 7; } while ($b & 0x80);
+        $fn = $v >> 3; $wt = $v & 0x07;
+        if ($wt == 0) {
+            $val = 0; $s = 0;
+            do { if ($pos >= $len) break 2; $b = ord($data[$pos++]); $val |= ($b & 0x7F) << $s; $s += 7; } while ($b & 0x80);
+            $fields[] = ['field' => $fn, 'type' => 'varint', 'value' => $val];
+        } elseif ($wt == 2) {
+            $dlen = 0; $s = 0;
+            do { if ($pos >= $len) break 2; $b = ord($data[$pos++]); $dlen |= ($b & 0x7F) << $s; $s += 7; } while ($b & 0x80);
+            $fields[] = ['field' => $fn, 'type' => 'bytes', 'len' => $dlen];
+            $pos += $dlen;
+        } else {
+            $fields[] = ['field' => $fn, 'type' => 'wiretype_' . $wt];
+            break; // Unknown wire type - stop
+        }
+    }
+    return $fields;
+}
+
 // ── PC task fabricator ──
 function get_pc_task_result(): string {
     $cpus=['Intel(R) Core(TM) i5-10400F CPU @ 2.90GHz','Intel(R) Core(TM) i5-12400F CPU @ 2.50GHz','Intel(R) Core(TM) i7-9700K CPU @ 3.60GHz','Intel(R) Core(TM) i7-10700K CPU @ 3.80GHz','Intel(R) Core(TM) i7-12700K CPU @ 3.60GHz','Intel(R) Core(TM) i9-10900K CPU @ 3.70GHz','AMD Ryzen 5 3600 6-Core','AMD Ryzen 5 5600X 6-Core','AMD Ryzen 7 3700X 8-Core','AMD Ryzen 7 5800X 8-Core'];
@@ -383,7 +408,7 @@ if ($action === "auth") {
     $finalPayload = build_payload($access->serializeToString(), $serverPublicKey, $type);
 
     $respExtra = [];
-    $respExtra['decrypted_hex'] = substr(bin2hex($decrypted), 0, 120);
+    $respExtra['proto_fields'] = json_encode(dump_proto_fields($decrypted));
     $respExtra['decrypted_len'] = strlen($decrypted);
     if (!empty($tasks['ids'])) {
         $respExtra['tasks_processed'] = count($tasks['ids']);
