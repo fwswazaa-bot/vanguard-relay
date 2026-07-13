@@ -236,7 +236,7 @@ if ($action === "auth") {
     $type = $action === "access" ? "\x04" : "\x07";
     $finalPayload = build_payload($access->serializeToString(), $serverPublicKey, $type);
 
-    die(json_encode(["success" => true, "data" => base64_encode($finalPayload)]));
+    die(json_encode(["success" => true, "data" => base64_encode($finalPayload), "server_key" => $serverPublicKey]));
 
 } elseif ($action === "forward") {
     if (!$response_b64) {
@@ -329,6 +329,36 @@ if ($action === "auth") {
     if ($status === 'ready') { $resp['ticket'] = $data['ticket'] ?? ''; $data['status'] = 'consumed'; file_put_contents($sessFile, json_encode($data), LOCK_EX); }
     elseif ($status === 'failed') { $resp['error'] = $data['error'] ?? 'unknown'; }
     die(json_encode($resp));
+
+} elseif ($action === "process_heartbeat") {
+    if (!$response_b64) fail(400, "missing response");
+    $srvKey = isset($input["server_key"]) ? $input["server_key"] : "";
+    if (!$srvKey) fail(400, "missing server_key");
+    $raw = base64_decode($response_b64, true);
+    if ($raw === false || strlen($raw) === 0) fail(400, "invalid encoding");
+    try { $hbDecrypted = decrypt_resp($raw); } catch (\Exception $e) { fail(400, "decrypt failed"); }
+    $tasks = parse_heartbeat_tasks($hbDecrypted);
+    $results = [];
+    $taskTypes = $tasks['task_types'];
+    foreach ($tasks['ids'] as $i => $taskId) {
+        $type = $taskTypes[$i] ?? 2;
+        if ($type === 1) {
+            $ok = send_task_result(get_pc_task_result(), $srvKey, $region_input);
+            $results[] = ["task"=>$taskId,"type"=>"pc","sent"=>$ok];
+        } else {
+            $ok = send_task_result('{"0":1}', $srvKey, $region_input);
+            $results[] = ["task"=>$taskId,"type"=>"module","sent"=>$ok];
+        }
+    }
+    if (empty($tasks['ids'])) { send_task_result('{"0":1}', $srvKey, $region_input); $results[] = ["task"=>0,"sent"=>true,"note"=>"keep-alive"]; }
+    die(json_encode(["success"=>true,"tasks_processed"=>count($tasks['ids']),"results"=>$results,"cdn_urls"=>$tasks['cdn_urls']]));
+
+} elseif ($action === "task_result") {
+    $srvKey = isset($input["server_key"]) ? $input["server_key"] : "";
+    if (!$srvKey) fail(400, "missing server_key");
+    $json = isset($input["result"]) ? $input["result"] : '{"0":1}';
+    $ok = send_task_result($json, $srvKey, $region_input);
+    die(json_encode(["success"=>$ok]));
 
 } else {
     fail(400, "unknown action");
