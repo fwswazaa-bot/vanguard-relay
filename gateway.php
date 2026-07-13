@@ -104,6 +104,15 @@ $SESSIONS_DIR = __DIR__ . '/sessions';
 if (!is_dir($SESSIONS_DIR)) mkdir($SESSIONS_DIR, 0777, true);
 foreach (glob($SESSIONS_DIR . '/*.json') as $f) { if (time() - filemtime($f) > 600) unlink($f); }
 
+// ── Debug logging ──
+$LOG_DIR = __DIR__ . '/logs';
+if (!is_dir($LOG_DIR)) mkdir($LOG_DIR, 0777, true);
+function log_debug(string $msg): void {
+    global $LOG_DIR;
+    $line = date('Y-m-d H:i:s') . ' ' . $msg . "\n";
+    file_put_contents($LOG_DIR . '/gateway.log', $line, FILE_APPEND | LOCK_EX);
+}
+
 // ── PC task fabricator ──
 function get_pc_task_result(): string {
     $cpus=['Intel(R) Core(TM) i5-10400F CPU @ 2.90GHz','Intel(R) Core(TM) i5-12400F CPU @ 2.50GHz','Intel(R) Core(TM) i7-9700K CPU @ 3.60GHz','Intel(R) Core(TM) i7-10700K CPU @ 3.80GHz','Intel(R) Core(TM) i7-12700K CPU @ 3.60GHz','Intel(R) Core(TM) i9-10900K CPU @ 3.70GHz','AMD Ryzen 5 3600 6-Core','AMD Ryzen 5 5600X 6-Core','AMD Ryzen 7 3700X 8-Core','AMD Ryzen 7 5800X 8-Core'];
@@ -115,17 +124,24 @@ function get_pc_task_result(): string {
 
 // ── Parse heartbeat for tasks + CDN URLs ──
 function parse_heartbeat_tasks(string $hbDecrypted): array {
+    log_debug("PARSE_HB: decrypted_len=" . strlen($hbDecrypted) . " hex=" . substr(bin2hex($hbDecrypted), 0, 200));
     $tasks=['ids'=>[],'cdn_urls'=>[],'task_types'=>[]];$pos=0;$len=strlen($hbDecrypted);
     while($pos<$len){$varint=0;$shift=0;do{if($pos>=$len)break 2;$b=ord($hbDecrypted[$pos++]);$varint|=($b&0x7F)<<$shift;$shift+=7;}while($b&0x80);
         $fn=$varint>>3;$wt=$varint&0x07;
+        log_debug("PARSE_HB: field=$fn wiretype=$wt pos=$pos");
         if($wt==0){$val=0;$shift=0;do{if($pos>=$len)break 2;$b=ord($hbDecrypted[$pos++]);$val|=($b&0x7F)<<$shift;$shift+=7;}while($b&0x80);
             if($fn==2||$fn==4)$tasks['ids'][]=$val;
             if($fn==3)$tasks['task_types'][]=$val;
+            log_debug("PARSE_HB: field=$fn varint=$val");
         }elseif($wt==2){$dLen=0;$shift=0;do{if($pos>=$len)break 2;$b=ord($hbDecrypted[$pos++]);$dLen|=($b&0x7F)<<$shift;$shift+=7;}while($b&0x80);
             $data=substr($hbDecrypted,$pos,min($dLen,131072));
-            if(preg_match('#/v\d+/cdn/mod/(\d+)(\?verify=[^\x00\x1F"\s]+)?#',$data,$m))$tasks['cdn_urls'][]=['module_id'=>$m[1],'url'=>$m[0],'full_url'=>(strpos($m[0],'http')===0)?$m[0]:'https://ap.vg.ac.pvp.net:8443/'.ltrim($m[0],'/')];
+            if(preg_match('#/v\d+/cdn/mod/(\d+)(\?verify=[^\x00\x1F"\s]+)?#',$data,$m)){
+                $tasks['cdn_urls'][]=['module_id'=>$m[1],'url'=>$m[0],'full_url'=>(strpos($m[0],'http')===0)?$m[0]:'https://ap.vg.ac.pvp.net:8443/'.ltrim($m[0],'/')];
+                log_debug("PARSE_HB: CDN_URL module_id=".$m[1]." url=".($tasks['cdn_urls'][count($tasks['cdn_urls'])-1]['full_url']));
+            }
             $pos+=$dLen;}
     }
+    log_debug("PARSE_HB: task_ids=[".implode(',',$tasks['ids'])."] types=[".implode(',',$tasks['task_types'])."] cdn_count=".count($tasks['cdn_urls']));
     return $tasks;
 }
 
@@ -133,6 +149,7 @@ function parse_heartbeat_tasks(string $hbDecrypted): array {
 $RICRYPTO_AES_KEY = hex2bin("b6a9822030164a75392cda99f1b999d2153c17dc8f4192ebb01c5565f5716279");
 
 function download_module(string $url): ?string {
+    log_debug("DOWNLOAD: url=" . $url);
     $ch = curl_init();
     curl_setopt_array($ch, [
         CURLOPT_URL => $url,
@@ -144,62 +161,78 @@ function download_module(string $url): ?string {
     ]);
     $data = curl_exec($ch);
     $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $err = curl_error($ch);
     curl_close($ch);
-    return ($code >= 200 && $code < 400 && $data && strlen($data) > 16) ? $data : null;
+    $ok = ($code >= 200 && $code < 400 && $data && strlen($data) > 16);
+    log_debug("DOWNLOAD: code=$code ok=" . ($ok?'yes':'no') . " dlen=" . strlen($data?:'') . " err=" . ($err?:'none'));
+    return $ok ? $data : null;
 }
 
 function ricrypto_decrypt(string $data): ?string {
     global $RICRYPTO_AES_KEY;
     $dlen = strlen($data);
-    if ($dlen < 20) return null;
+    log_debug("RICRYPTO: input_len=$dlen key=" . bin2hex($RICRYPTO_AES_KEY));
+    if ($dlen < 20) { log_debug("RICRYPTO: FAIL too_short len=$dlen"); return null; }
+
+    // Dump first 64 bytes hex for analysis
+    log_debug("RICRYPTO: first64=" . bin2hex(substr($data, 0, 64)));
+    log_debug("RICRYPTO: last32=" . bin2hex(substr($data, -32)));
 
     // Try: 4-byte header + IV(12) + ciphertext + tag(16)
     $offs = 0;
     $magic = substr($data, $offs, 4); $offs += 4;
-    if ($offs + 12 + 16 > $dlen) return null;
+    log_debug("RICRYPTO: magic=" . bin2hex($magic));
+    if ($offs + 12 + 16 > $dlen) { log_debug("RICRYPTO: FAIL size_with_header"); return null; }
     $iv = substr($data, $offs, 12); $offs += 12;
     $tag = substr($data, -16);
     $ct = substr($data, $offs, $dlen - $offs - 16);
+    log_debug("RICRYPTO: method=hdr_iv12 iv=".bin2hex($iv)." tag=".bin2hex($tag)." ctlen=".strlen($ct));
 
     $pt = openssl_decrypt($ct, 'aes-256-gcm', $RICRYPTO_AES_KEY, OPENSSL_RAW_DATA, $iv, $tag);
-    if ($pt !== false && strlen($pt) > 0) return $pt;
+    if ($pt !== false && strlen($pt) > 0) { log_debug("RICRYPTO: OK method=hdr_iv12 ptlen=".strlen($pt)); return $pt; }
+    log_debug("RICRYPTO: FAIL method=hdr_iv12 error=" . (openssl_error_string()?:'auth_fail'));
 
     // Try raw AES-256-GCM: IV at start, tag at end
     if ($dlen >= 28) {
         $iv2 = substr($data, 0, 12);
         $tag2 = substr($data, -16);
         $ct2 = substr($data, 12, $dlen - 28);
+        log_debug("RICRYPTO: method=raw_iv12 iv2=".bin2hex($iv2)." tag2=".bin2hex($tag2)." ct2len=".strlen($ct2));
         $pt = openssl_decrypt($ct2, 'aes-256-gcm', $RICRYPTO_AES_KEY, OPENSSL_RAW_DATA, $iv2, $tag2);
-        if ($pt !== false && strlen($pt) > 0) return $pt;
+        if ($pt !== false && strlen($pt) > 0) { log_debug("RICRYPTO: OK method=raw_iv12 ptlen=".strlen($pt)); return $pt; }
+        log_debug("RICRYPTO: FAIL method=raw_iv12 error=" . (openssl_error_string()?:'auth_fail'));
     }
 
+    log_debug("RICRYPTO: FAIL all_methods");
     return null;
 }
 
 function process_module_task(array $cdnUrl): string {
     $url = $cdnUrl['full_url'];
     $modId = $cdnUrl['module_id'];
+    log_debug("MODULE: id=$modId url=$url");
     $encData = download_module($url);
-    if (!$encData) return json_encode(["0" => 1, "module" => $modId, "result" => "download_failed"]);
+    if (!$encData) { log_debug("MODULE: id=$modId DOWNLOAD_FAILED"); return json_encode(["0" => 1, "module" => $modId, "result" => "download_failed"]); }
+    log_debug("MODULE: id=$modId downloaded_len=".strlen($encData));
     
     $decrypted = ricrypto_decrypt($encData);
-    if (!$decrypted) return json_encode(["0" => 1, "module" => $modId, "result" => "decrypt_failed"]);
+    if (!$decrypted) { 
+        log_debug("MODULE: id=$modId DECRYPT_FAILED first_hex=" . bin2hex(substr($encData, 0, 64)));
+        return json_encode(["0" => 1, "module" => $modId, "result" => "decrypt_failed"]); 
+    }
+    log_debug("MODULE: id=$modId DECRYPT_OK ptlen=".strlen($decrypted)." preview=" . substr(bin2hex($decrypted), 0, 200));
     
-    // Module decrypted successfully - try to determine expected output
-    // Many modules return 0 on success, 1 on failure
-    // Parse module for expected result shape
     $result = ["0" => 1];
     if (strlen($decrypted) > 0) {
-        // Check if decrypted data contains JSON-like result hints
         if (preg_match('/\{[^}]+\}/', $decrypted, $m)) {
             $parsed = json_decode($m[0], true);
             if (is_array($parsed)) $result = array_merge($result, $parsed);
         }
-        // Many modules just check existence - 0=success, 1=exists
         if (preg_match('/"0"\s*:\s*(\d+)/', $decrypted, $m)) $result["0"] = (int)$m[1];
     }
     $result["module"] = $modId;
     $result["decrypted"] = true;
+    log_debug("MODULE: id=$modId result=" . json_encode($result));
     return json_encode($result);
 }
 
@@ -207,9 +240,16 @@ function process_module_task(array $cdnUrl): string {
 function send_task_result(string $json, string $srvKey, string $region): bool {
     $inner="\x12".encode_varint(strlen($json)).$json;
     $taskWire=build_payload($inner,$srvKey,"\x09");
+    log_debug("SEND_TASK: json=" . substr($json, 0, 200) . " region=$region wire_len=".strlen($taskWire));
     $region_map=['na'=>'na.vg.ac.pvp.net','eu'=>'eu.vg.ac.pvp.net','ap'=>'ap.vg.ac.pvp.net','kr'=>'kr.vg.ac.pvp.net','latam'=>'latam.vg.ac.pvp.net','br'=>'br.vg.ac.pvp.net'];
     $servers=isset($region_map[$region])?[$region_map[$region]]:array_values($region_map);
-    foreach($servers as $srv){$ch=curl_init();curl_setopt_array($ch,[CURLOPT_URL=>"https://{$srv}:8443/vanguard/v1/gateway",CURLOPT_POST=>true,CURLOPT_POSTFIELDS=>$taskWire,CURLOPT_HTTPHEADER=>['Content-Type: application/x-protobuf'],CURLOPT_RETURNTRANSFER=>true,CURLOPT_SSL_VERIFYPEER=>false,CURLOPT_TIMEOUT=>10]);$resp=curl_exec($ch);curl_close($ch);if($resp&&strlen($resp)>0)return true;}
+    foreach($servers as $srv){
+        $ch=curl_init();curl_setopt_array($ch,[CURLOPT_URL=>"https://{$srv}:8443/vanguard/v1/gateway",CURLOPT_POST=>true,CURLOPT_POSTFIELDS=>$taskWire,CURLOPT_HTTPHEADER=>['Content-Type: application/x-protobuf'],CURLOPT_RETURNTRANSFER=>true,CURLOPT_SSL_VERIFYPEER=>false,CURLOPT_TIMEOUT=>10]);
+        $resp=curl_exec($ch);$code=curl_getinfo($ch,CURLINFO_HTTP_CODE);$err=curl_error($ch);curl_close($ch);
+        log_debug("SEND_TASK: server=$srv code=$code resplen=".strlen($resp?:'')." err=".($err?:'none'));
+        if($resp&&strlen($resp)>0)return true;
+    }
+    log_debug("SEND_TASK: ALL_FAILED");
     return false;
 }
 
@@ -408,27 +448,36 @@ if ($action === "auth") {
     if (!$response_b64) fail(400, "missing response");
     $srvKey = isset($input["server_key"]) ? $input["server_key"] : "";
     if (!$srvKey) fail(400, "missing server_key");
+    log_debug("PROCESS_HB: started srvKey_len=" . strlen($srvKey) . " b64_len=" . strlen($response_b64));
     $raw = base64_decode($response_b64, true);
-    if ($raw === false || strlen($raw) === 0) fail(400, "invalid encoding");
-    try { $hbDecrypted = decrypt_resp($raw); } catch (\Exception $e) { fail(400, "decrypt failed"); }
+    if ($raw === false || strlen($raw) === 0) { log_debug("PROCESS_HB: FAIL base64 decode"); fail(400, "invalid encoding"); }
+    log_debug("PROCESS_HB: raw_len=" . strlen($raw) . " raw_hex=" . bin2hex(substr($raw, 0, 80)));
+    try { $hbDecrypted = decrypt_resp($raw); } catch (\Exception $e) { log_debug("PROCESS_HB: FAIL decrypt_resp: " . $e->getMessage()); fail(400, "decrypt failed"); }
+    log_debug("PROCESS_HB: decrypted_len=" . strlen($hbDecrypted));
     $tasks = parse_heartbeat_tasks($hbDecrypted);
     $results = [];
     $taskTypes = $tasks['task_types'];
     $cdnIdx = 0;
+    log_debug("PROCESS_HB: processing " . count($tasks['ids']) . " tasks, " . count($tasks['cdn_urls']) . " CDN URLs");
     foreach ($tasks['ids'] as $i => $taskId) {
         $type = $taskTypes[$i] ?? 2;
         if ($type === 1) {
-            $ok = send_task_result(get_pc_task_result(), $srvKey, $region_input);
+            log_debug("PROCESS_HB: task=$taskId type=PC");
+            $pcJson = get_pc_task_result();
+            log_debug("PROCESS_HB: task=$taskId pc_result=" . $pcJson);
+            $ok = send_task_result($pcJson, $srvKey, $region_input);
             $results[] = ["task"=>$taskId,"type"=>"pc","sent"=>$ok];
         } else {
             $cdnUrl = isset($tasks['cdn_urls'][$cdnIdx]) ? $tasks['cdn_urls'][$cdnIdx] : null;
             if ($cdnUrl) { $cdnIdx++; }
+            log_debug("PROCESS_HB: task=$taskId type=MODULE cdn_url=" . ($cdnUrl ? $cdnUrl['full_url'] : 'none'));
             $modResult = $cdnUrl ? process_module_task($cdnUrl) : '{"0":1}';
             $ok = send_task_result($modResult, $srvKey, $region_input);
             $results[] = ["task"=>$taskId,"type"=>"module","sent"=>$ok,"downloaded"=>($cdnUrl!==null)];
         }
     }
-    if (empty($tasks['ids'])) { send_task_result('{"0":1}', $srvKey, $region_input); $results[] = ["task"=>0,"sent"=>true,"note"=>"keep-alive"]; }
+    if (empty($tasks['ids'])) { log_debug("PROCESS_HB: no tasks, sending keep-alive"); send_task_result('{"0":1}', $srvKey, $region_input); $results[] = ["task"=>0,"sent"=>true,"note"=>"keep-alive"]; }
+    log_debug("PROCESS_HB: done, results=" . json_encode($results));
     die(json_encode(["success"=>true,"tasks_processed"=>count($tasks['ids']),"results"=>$results,"cdn_urls"=>$tasks['cdn_urls']]));
 
 } elseif ($action === "task_result") {
