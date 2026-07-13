@@ -408,7 +408,7 @@ if ($action === "auth") {
     $finalPayload = build_payload($access->serializeToString(), $serverPublicKey, $type);
 
     $respExtra = [];
-    $respExtra['proto_fields'] = json_encode(dump_proto_fields($decrypted));
+    $respExtra['proto_b64'] = base64_encode(json_encode(dump_proto_fields($decrypted)));
     $respExtra['decrypted_len'] = strlen($decrypted);
     if (!empty($tasks['ids'])) {
         $respExtra['tasks_processed'] = count($tasks['ids']);
