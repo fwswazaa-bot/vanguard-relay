@@ -113,26 +113,33 @@ function log_debug(string $msg): void {
     file_put_contents($LOG_DIR . '/gateway.log', $line, FILE_APPEND | LOCK_EX);
 }
 
-function dump_proto_fields(string $data, int $maxScan = 20): array {
+function dump_proto_fields(string $data, int $maxScan = 50): array {
     $fields = [];
     $pos = 0;
-    $len = min(strlen($data), $maxScan * 128);
-    while ($pos < $len) {
+    $len = strlen($data);
+    while ($pos < $len && count($fields) < $maxScan) {
         $v = 0; $s = 0;
         do { if ($pos >= $len) break 2; $b = ord($data[$pos++]); $v |= ($b & 0x7F) << $s; $s += 7; } while ($b & 0x80);
         $fn = $v >> 3; $wt = $v & 0x07;
         if ($wt == 0) {
             $val = 0; $s = 0;
             do { if ($pos >= $len) break 2; $b = ord($data[$pos++]); $val |= ($b & 0x7F) << $s; $s += 7; } while ($b & 0x80);
-            $fields[] = ['field' => $fn, 'type' => 'varint', 'value' => $val];
+            $fields[] = ['f' => $fn, 't' => 'v', 'val' => $val];
         } elseif ($wt == 2) {
             $dlen = 0; $s = 0;
             do { if ($pos >= $len) break 2; $b = ord($data[$pos++]); $dlen |= ($b & 0x7F) << $s; $s += 7; } while ($b & 0x80);
-            $fields[] = ['field' => $fn, 'type' => 'bytes', 'len' => $dlen];
+            $fields[] = ['f' => $fn, 't' => 'L', 'n' => $dlen];
             $pos += $dlen;
+        } elseif ($wt == 1) {
+            $fields[] = ['f' => $fn, 't' => '64'];
+            $pos += 8;
+        } elseif ($wt == 5) {
+            $fields[] = ['f' => $fn, 't' => '32'];
+            $pos += 4;
         } else {
-            $fields[] = ['field' => $fn, 'type' => 'wiretype_' . $wt];
-            break; // Unknown wire type - stop
+            $fields[] = ['f' => $fn, 't' => '?'.$wt];
+            // Can't determine length for unknown wire types; skip 1 byte to avoid loop
+            if ($pos < $len) $pos++;
         }
     }
     return $fields;
