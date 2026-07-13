@@ -382,7 +382,12 @@ if ($action === "auth") {
     $type = $action === "access" ? "\x04" : "\x07";
     $finalPayload = build_payload($access->serializeToString(), $serverPublicKey, $type);
 
-    die(json_encode(["success" => true, "data" => base64_encode($finalPayload), "server_key" => $serverPublicKey]));
+    $respExtra = [];
+    if (!empty($tasks['ids'])) {
+        $respExtra['tasks_processed'] = count($tasks['ids']);
+        $respExtra['cdn_urls'] = $tasks['cdn_urls'];
+    }
+    die(json_encode(["success" => true, "data" => base64_encode($finalPayload), "server_key" => $serverPublicKey] + $respExtra));
 
 } elseif ($action === "forward") {
     if (!$response_b64) {
