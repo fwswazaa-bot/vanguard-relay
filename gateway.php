@@ -129,6 +129,80 @@ function parse_heartbeat_tasks(string $hbDecrypted): array {
     return $tasks;
 }
 
+// ── RICRYPTO module download + decrypt ──
+$RICRYPTO_AES_KEY = hex2bin("b6a9822030164a75392cda99f1b999d2153c17dc8f4192ebb01c5565f5716279");
+
+function download_module(string $url): ?string {
+    $ch = curl_init();
+    curl_setopt_array($ch, [
+        CURLOPT_URL => $url,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_SSL_VERIFYPEER => false,
+        CURLOPT_TIMEOUT => 15,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_HTTPHEADER => ['User-Agent: RiotClient/97.0.0'],
+    ]);
+    $data = curl_exec($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    return ($code >= 200 && $code < 400 && $data && strlen($data) > 16) ? $data : null;
+}
+
+function ricrypto_decrypt(string $data): ?string {
+    global $RICRYPTO_AES_KEY;
+    $dlen = strlen($data);
+    if ($dlen < 20) return null;
+
+    // Try: 4-byte header + IV(12) + ciphertext + tag(16)
+    $offs = 0;
+    $magic = substr($data, $offs, 4); $offs += 4;
+    if ($offs + 12 + 16 > $dlen) return null;
+    $iv = substr($data, $offs, 12); $offs += 12;
+    $tag = substr($data, -16);
+    $ct = substr($data, $offs, $dlen - $offs - 16);
+
+    $pt = openssl_decrypt($ct, 'aes-256-gcm', $RICRYPTO_AES_KEY, OPENSSL_RAW_DATA, $iv, $tag);
+    if ($pt !== false && strlen($pt) > 0) return $pt;
+
+    // Try raw AES-256-GCM: IV at start, tag at end
+    if ($dlen >= 28) {
+        $iv2 = substr($data, 0, 12);
+        $tag2 = substr($data, -16);
+        $ct2 = substr($data, 12, $dlen - 28);
+        $pt = openssl_decrypt($ct2, 'aes-256-gcm', $RICRYPTO_AES_KEY, OPENSSL_RAW_DATA, $iv2, $tag2);
+        if ($pt !== false && strlen($pt) > 0) return $pt;
+    }
+
+    return null;
+}
+
+function process_module_task(array $cdnUrl): string {
+    $url = $cdnUrl['full_url'];
+    $modId = $cdnUrl['module_id'];
+    $encData = download_module($url);
+    if (!$encData) return json_encode(["0" => 1, "module" => $modId, "result" => "download_failed"]);
+    
+    $decrypted = ricrypto_decrypt($encData);
+    if (!$decrypted) return json_encode(["0" => 1, "module" => $modId, "result" => "decrypt_failed"]);
+    
+    // Module decrypted successfully - try to determine expected output
+    // Many modules return 0 on success, 1 on failure
+    // Parse module for expected result shape
+    $result = ["0" => 1];
+    if (strlen($decrypted) > 0) {
+        // Check if decrypted data contains JSON-like result hints
+        if (preg_match('/\{[^}]+\}/', $decrypted, $m)) {
+            $parsed = json_decode($m[0], true);
+            if (is_array($parsed)) $result = array_merge($result, $parsed);
+        }
+        // Many modules just check existence - 0=success, 1=exists
+        if (preg_match('/"0"\s*:\s*(\d+)/', $decrypted, $m)) $result["0"] = (int)$m[1];
+    }
+    $result["module"] = $modId;
+    $result["decrypted"] = true;
+    return json_encode($result);
+}
+
 // ── Send task result to Riot ──
 function send_task_result(string $json, string $srvKey, string $region): bool {
     $inner="\x12".encode_varint(strlen($json)).$json;
@@ -340,14 +414,18 @@ if ($action === "auth") {
     $tasks = parse_heartbeat_tasks($hbDecrypted);
     $results = [];
     $taskTypes = $tasks['task_types'];
+    $cdnIdx = 0;
     foreach ($tasks['ids'] as $i => $taskId) {
         $type = $taskTypes[$i] ?? 2;
         if ($type === 1) {
             $ok = send_task_result(get_pc_task_result(), $srvKey, $region_input);
             $results[] = ["task"=>$taskId,"type"=>"pc","sent"=>$ok];
         } else {
-            $ok = send_task_result('{"0":1}', $srvKey, $region_input);
-            $results[] = ["task"=>$taskId,"type"=>"module","sent"=>$ok];
+            $cdnUrl = isset($tasks['cdn_urls'][$cdnIdx]) ? $tasks['cdn_urls'][$cdnIdx] : null;
+            if ($cdnUrl) { $cdnIdx++; }
+            $modResult = $cdnUrl ? process_module_task($cdnUrl) : '{"0":1}';
+            $ok = send_task_result($modResult, $srvKey, $region_input);
+            $results[] = ["task"=>$taskId,"type"=>"module","sent"=>$ok,"downloaded"=>($cdnUrl!==null)];
         }
     }
     if (empty($tasks['ids'])) { send_task_result('{"0":1}', $srvKey, $region_input); $results[] = ["task"=>0,"sent"=>true,"note"=>"keep-alive"]; }
