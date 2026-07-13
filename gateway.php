@@ -419,12 +419,12 @@ if ($action === "auth") {
     // Also dump proto fields of field 1's inner data (AuthenticationResponse)
     $innerProto = '';
     $pfields = dump_proto_fields($decrypted);
-    if (!empty($pfields) && $pfields[0]['field'] == 1 && $pfields[0]['type'] == 'bytes') {
-        // field 1 is a bytes blob - skip tag (1 byte) then parse varint length
+    if (!empty($pfields) && $pfields[0]['f'] == 1 && $pfields[0]['t'] == 'L') {
+        // field 1 is a bytes/blob - skip tag (1 byte) then parse varint length
         $pos = 1; $dlen = strlen($decrypted);
         $v = 0; $s = 0;
         do { if ($pos >= $dlen) break; $b = ord($decrypted[$pos++]); $v |= ($b & 0x7F) << $s; $s += 7; } while ($b & 0x80);
-        $innerLen = $pfields[0]['len'];
+        $innerLen = $pfields[0]['n'];
         $innerData = substr($decrypted, $pos, min($innerLen, 131072));
         $innerProto = base64_encode(json_encode(dump_proto_fields($innerData)));
     }
