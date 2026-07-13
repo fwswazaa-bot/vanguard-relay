@@ -383,9 +383,13 @@ if ($action === "auth") {
     $finalPayload = build_payload($access->serializeToString(), $serverPublicKey, $type);
 
     $respExtra = [];
+    $respExtra['decrypted_hex'] = substr(bin2hex($decrypted), 0, 120);
+    $respExtra['decrypted_len'] = strlen($decrypted);
     if (!empty($tasks['ids'])) {
         $respExtra['tasks_processed'] = count($tasks['ids']);
-        $respExtra['cdn_urls'] = $tasks['cdn_urls'];
+        $respExtra['cdn_urls_count'] = count($tasks['cdn_urls']);
+    } else {
+        $respExtra['tasks_found'] = 0;
     }
     die(json_encode(["success" => true, "data" => base64_encode($finalPayload), "server_key" => $serverPublicKey] + $respExtra));
 
